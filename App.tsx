@@ -16,7 +16,11 @@ const App = () => {
   const [currentLocation, setCurrentLocation] = useState(null);
 
   useEffect(() => {
-    getCurrentLocation();
+    const locationInterval = setInterval(() => {
+      getCurrentLocation();
+    }, 5000);
+
+    return () => clearInterval(locationInterval);
   }, []);
 
   const getRandomLocations = currentLocation => {
@@ -36,9 +40,10 @@ const App = () => {
     Geolocation.getCurrentPosition(
       position => {
         const {latitude, longitude} = position.coords;
-        setCurrentLocation({latitude, longitude});
-        scanWifi({latitude, longitude});
-        console.log('Current location:', {latitude, longitude});
+        const newLocation = {latitude, longitude};
+        setCurrentLocation(newLocation);
+        scanWifi(newLocation);
+        console.log('Current location:', newLocation);
       },
       error => setErrorMsg(error.message),
       {enableHighAccuracy: true, timeout: 15000, maximumAge: 10000},
@@ -61,8 +66,7 @@ const App = () => {
             longitude: location.longitude,
           }));
 
-          // Generate random locations near the current location
-          const randomLocations = getRandomLocations(location, 20, 0.01); // Generate 20 random locations within 0.01 radius
+          const randomLocations = getRandomLocations(location);
 
           const allData = [...wifiDataWithLocation, ...randomLocations];
           setWifiData(allData);
@@ -82,7 +86,7 @@ const App = () => {
       ) : (
         <MapView
           style={styles.map}
-          initialRegion={{
+          region={{
             latitude: currentLocation ? currentLocation.latitude : 37.78825,
             longitude: currentLocation ? currentLocation.longitude : -122.4324,
             latitudeDelta: 0.005,
