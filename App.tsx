@@ -16,37 +16,21 @@ const App = () => {
   const [currentLocation, setCurrentLocation] = useState(null);
 
   useEffect(() => {
-    const requestPermissions = async () => {
-      if (Platform.OS === 'android') {
-        try {
-          const granted = await PermissionsAndroid.requestMultiple([
-            PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-            PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION,
-            PermissionsAndroid.PERMISSIONS.ACCESS_WIFI_STATE,
-          ]);
-
-          if (
-            granted['android.permission.ACCESS_FINE_LOCATION'] ===
-              PermissionsAndroid.RESULTS.GRANTED &&
-            granted['android.permission.ACCESS_COARSE_LOCATION'] ===
-              PermissionsAndroid.RESULTS.GRANTED &&
-            granted['android.permission.ACCESS_WIFI_STATE'] ===
-              PermissionsAndroid.RESULTS.GRANTED
-          ) {
-            getCurrentLocation();
-          } else {
-            setErrorMsg('Location and WiFi permissions denied');
-          }
-        } catch (err) {
-          setErrorMsg(err.message);
-        }
-      } else {
-        getCurrentLocation();
-      }
-    };
-
-    requestPermissions();
+    getCurrentLocation();
   }, []);
+
+  const getRandomLocations = currentLocation => {
+    const {latitude, longitude} = currentLocation;
+    const locations = [
+      {latitude: latitude + 0.0001, longitude: longitude + 0.0001, weight: 5},
+      {latitude: latitude + 0.0001, longitude: longitude - 0.0001, weight: 5},
+      {latitude: latitude - 0.0001, longitude: longitude + 0.0001, weight: 5},
+      {latitude: latitude - 0.0001, longitude: longitude - 0.0001, weight: 5},
+      {latitude: latitude + 0.0002, longitude: longitude, weight: 5},
+    ];
+
+    return locations;
+  };
 
   const getCurrentLocation = () => {
     Geolocation.getCurrentPosition(
@@ -54,6 +38,7 @@ const App = () => {
         const {latitude, longitude} = position.coords;
         setCurrentLocation({latitude, longitude});
         scanWifi({latitude, longitude});
+        console.log('Current location:', {latitude, longitude});
       },
       error => setErrorMsg(error.message),
       {enableHighAccuracy: true, timeout: 15000, maximumAge: 10000},
@@ -75,7 +60,12 @@ const App = () => {
             latitude: location.latitude,
             longitude: location.longitude,
           }));
-          setWifiData(wifiDataWithLocation);
+
+          // Generate random locations near the current location
+          const randomLocations = getRandomLocations(location, 20, 0.01); // Generate 20 random locations within 0.01 radius
+
+          const allData = [...wifiDataWithLocation, ...randomLocations];
+          setWifiData(allData);
         } catch (error) {
           setErrorMsg('Failed to parse WiFi list: ' + error.message);
         }
