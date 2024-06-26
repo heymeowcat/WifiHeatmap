@@ -16,67 +16,74 @@ const App = () => {
   const [currentLocation, setCurrentLocation] = useState(null);
 
   useEffect(() => {
-    const locationInterval = setInterval(() => {
-      getCurrentLocation();
-    }, 5000);
-
-    return () => clearInterval(locationInterval);
+    requestLocationPermission();
   }, []);
 
-  const getRandomLocations = currentLocation => {
-    const {latitude, longitude} = currentLocation;
-    const locations = [
-      {latitude: latitude + 0.0001, longitude: longitude + 0.0001, weight: 5},
-      {latitude: latitude + 0.0001, longitude: longitude - 0.0001, weight: 5},
-      {latitude: latitude - 0.0001, longitude: longitude + 0.0001, weight: 5},
-      {latitude: latitude - 0.0001, longitude: longitude - 0.0001, weight: 5},
-      {latitude: latitude + 0.0002, longitude: longitude, weight: 5},
-    ];
-
-    return locations;
+  const requestLocationPermission = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          {
+            title: 'Location Permission',
+            message:
+              'This app needs access to your location to create a WiFi heatmap.',
+            buttonNeutral: 'Ask Me Later',
+            buttonNegative: 'Cancel',
+            buttonPositive: 'OK',
+          },
+        );
+        if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+          console.log('Location permission granted');
+          startLocationUpdates();
+        } else {
+          setErrorMsg('Location permission denied');
+        }
+      } catch (err) {
+        console.warn(err);
+        setErrorMsg('Error requesting location permission');
+      }
+    } else {
+      startLocationUpdates();
+    }
   };
 
-  const getCurrentLocation = () => {
-    Geolocation.getCurrentPosition(
+  const startLocationUpdates = () => {
+    const watchId = Geolocation.watchPosition(
       position => {
         const {latitude, longitude} = position.coords;
         const newLocation = {latitude, longitude};
         setCurrentLocation(newLocation);
         scanWifi(newLocation);
-        console.log('Current location:', newLocation);
       },
       error => setErrorMsg(error.message),
-      {enableHighAccuracy: true, timeout: 15000, maximumAge: 10000},
+      {
+        enableHighAccuracy: true,
+        distanceFilter: 10,
+        interval: 5000,
+        fastestInterval: 2000,
+      },
     );
+
+    return () => Geolocation.clearWatch(watchId);
   };
 
-  const scanWifi = location => {
-    WifiManager.loadWifiList()
-      .then(wifiList => {
-        let parsedWifiList;
-        try {
-          if (typeof wifiList === 'string') {
-            parsedWifiList = JSON.parse(wifiList);
-          } else {
-            parsedWifiList = wifiList;
-          }
-          const wifiDataWithLocation = parsedWifiList.map(wifi => ({
-            ...wifi,
-            latitude: location.latitude,
-            longitude: location.longitude,
-          }));
+  const scanWifi = async location => {
+    try {
+      const wifiList = await WifiManager.loadWifiList();
+      const parsedWifiList =
+        typeof wifiList === 'string' ? JSON.parse(wifiList) : wifiList;
 
-          const randomLocations = getRandomLocations(location);
+      const wifiDataWithLocation = parsedWifiList.map(wifi => ({
+        latitude: location.latitude,
+        longitude: location.longitude,
+        intensity: Math.abs(wifi.level),
+      }));
 
-          const allData = [...wifiDataWithLocation, ...randomLocations];
-          setWifiData(allData);
-        } catch (error) {
-          setErrorMsg('Failed to parse WiFi list: ' + error.message);
-        }
-      })
-      .catch(error => {
-        setErrorMsg(error.message);
-      });
+      setWifiData(prevData => [...prevData, ...wifiDataWithLocation]);
+    } catch (error) {
+      setErrorMsg('Failed to scan WiFi: ' + error.message);
+    }
   };
 
   return (
@@ -95,13 +102,12 @@ const App = () => {
           showsUserLocation={true}>
           {wifiData.length > 0 && (
             <Heatmap
-              points={wifiData.map(wifi => ({
-                latitude: wifi.latitude,
-                longitude: wifi.longitude,
-                weight: wifi.level,
-              }))}
+              points={wifiData}
               radius={20}
-              opacity={0.6}
+              opacity={0.8}
+              maxIntensity={100}
+              gradientSmoothing={10}
+              heatmapMode={'POINTS_WEIGHT'}
             />
           )}
           {currentLocation && (
