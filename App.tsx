@@ -9,12 +9,15 @@ import {
   TouchableOpacity,
   ScrollView,
   Dimensions,
+  TextInput,
+  Modal,
 } from 'react-native';
 import WifiManager from 'react-native-wifi-reborn';
 import MapView, {Heatmap, Marker} from 'react-native-maps';
 import Geolocation from '@react-native-community/geolocation';
 import {launchImageLibrary} from 'react-native-image-picker';
-import Svg, {Rect} from 'react-native-svg';
+import Svg, {Rect, Circle} from 'react-native-svg';
+import {Picker} from '@react-native-picker/picker';
 
 const {width} = Dimensions.get('window');
 
@@ -23,22 +26,18 @@ const GRID_SIZE = 20;
 const DataTable = ({data}) => (
   <View style={styles.tableContainer}>
     <View style={styles.tableHeader}>
-      <Text style={styles.tableHeaderCell}>Latitude</Text>
-      <Text style={styles.tableHeaderCell}>Longitude</Text>
+      <Text style={styles.tableHeaderCell}>SSID</Text>
+      <Text style={styles.tableHeaderCell}>BSSID</Text>
       <Text style={styles.tableHeaderCell}>Strength</Text>
-      {data.some(point => 'altitude' in point) && (
-        <Text style={styles.tableHeaderCell}>Altitude</Text>
-      )}
+      <Text style={styles.tableHeaderCell}>Channel</Text>
     </View>
     <ScrollView style={styles.tableBody}>
       {data.map((point, index) => (
         <View key={index} style={styles.tableRow}>
-          <Text style={styles.tableCell}>{point.latitude.toFixed(6)}</Text>
-          <Text style={styles.tableCell}>{point.longitude.toFixed(6)}</Text>
-          <Text style={styles.tableCell}>{point.intensity}</Text>
-          {point.altitude !== undefined && (
-            <Text style={styles.tableCell}>{point.altitude.toFixed(2)}</Text>
-          )}
+          <Text style={styles.tableCell}>{point.SSID}</Text>
+          <Text style={styles.tableCell}>{point.BSSID}</Text>
+          <Text style={styles.tableCell}>{point.level} dBm</Text>
+          <Text style={styles.tableCell}>{point.frequency}</Text>
         </View>
       ))}
     </ScrollView>
@@ -49,22 +48,24 @@ const App = () => {
   const [wifiData, setWifiData] = useState([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [currentLocation, setCurrentLocation] = useState(null);
-  const [floorPlan, setFloorPlan] = useState(null);
+  const [floorPlans, setFloorPlans] = useState({});
   const [connectedDevice, setConnectedDevice] = useState(null);
   const [scanStatus, setScanStatus] = useState('Idle');
   const [isCapturing, setIsCapturing] = useState(false);
-  const [floorPlanWifiData, setFloorPlanWifiData] = useState(
-    Array(GRID_SIZE)
-      .fill()
-      .map(() => Array(GRID_SIZE).fill(0)),
-  );
-  const [imageSize, setImageSize] = useState({width: 0, height: 0});
+  const [floorPlanWifiData, setFloorPlanWifiData] = useState({});
+  const [currentFloor, setCurrentFloor] = useState('1');
+  const [isAddingFloor, setIsAddingFloor] = useState(false);
+  const [newFloorName, setNewFloorName] = useState('');
+  const [currentPositionOnFloorPlan, setCurrentPositionOnFloorPlan] =
+    useState(null);
 
   const watchId = useRef(null);
+  const isMounted = useRef(true);
 
   useEffect(() => {
     requestLocationPermission();
     return () => {
+      isMounted.current = false;
       if (watchId.current) Geolocation.clearWatch(watchId.current);
     };
   }, []);
@@ -99,10 +100,18 @@ const App = () => {
     setIsCapturing(true);
     watchId.current = Geolocation.watchPosition(
       position => {
-        const {latitude, longitude, altitude} = position.coords;
-        scanWifi({latitude, longitude, altitude});
+        if (isMounted.current) {
+          const {latitude, longitude, altitude} = position.coords;
+          setCurrentLocation({latitude, longitude});
+          scanWifi({latitude, longitude, altitude});
+          updatePositionOnFloorPlan(latitude, longitude);
+        }
       },
-      error => setErrorMsg(error.message),
+      error => {
+        if (isMounted.current) {
+          setErrorMsg(error.message);
+        }
+      },
       {
         enableHighAccuracy: true,
         distanceFilter: 2,
@@ -125,10 +134,10 @@ const App = () => {
         typeof wifiList === 'string' ? JSON.parse(wifiList) : wifiList;
 
       const newWifiData = parsedWifiList.map(wifi => ({
+        ...wifi,
         latitude: location.latitude,
         longitude: location.longitude,
         altitude: location.altitude,
-        intensity: Math.abs(wifi.level),
       }));
 
       setWifiData(prevData => [...prevData, ...newWifiData]);
@@ -136,12 +145,20 @@ const App = () => {
       const gridX = Math.floor(Math.random() * GRID_SIZE);
       const gridY = Math.floor(Math.random() * GRID_SIZE);
       const avgIntensity =
-        newWifiData.reduce((sum, data) => sum + data.intensity, 0) /
+        newWifiData.reduce((sum, data) => sum + Math.abs(data.level), 0) /
         newWifiData.length;
 
       setFloorPlanWifiData(prevData => {
-        const newData = [...prevData];
-        newData[gridY][gridX] = Math.max(newData[gridY][gridX], avgIntensity);
+        const newData = {...prevData};
+        if (!newData[currentFloor]) {
+          newData[currentFloor] = Array(GRID_SIZE)
+            .fill()
+            .map(() => Array(GRID_SIZE).fill(0));
+        }
+        newData[currentFloor][gridY][gridX] = Math.max(
+          newData[currentFloor][gridY][gridX],
+          avgIntensity,
+        );
         return newData;
       });
 
@@ -155,6 +172,14 @@ const App = () => {
     }
   };
 
+  const updatePositionOnFloorPlan = (latitude, longitude) => {
+    // This is a simplified example. You would need to implement proper
+    // coordinate transformation based on your floor plan's scale and orientation.
+    const x = (longitude - currentLocation.longitude) * 1000 + GRID_SIZE / 2;
+    const y = (latitude - currentLocation.latitude) * 1000 + GRID_SIZE / 2;
+    setCurrentPositionOnFloorPlan({x, y});
+  };
+
   const uploadFloorPlan = () => {
     launchImageLibrary({mediaType: 'photo'}, response => {
       if (response.didCancel) {
@@ -162,35 +187,62 @@ const App = () => {
       } else if (response.error) {
         console.log('ImagePicker Error: ', response.error);
       } else if (response.assets && response.assets.length > 0) {
-        setFloorPlan(response.assets[0].uri);
-        Image.getSize(response.assets[0].uri, (width, height) => {
-          setImageSize({width, height});
-        });
+        setFloorPlans(prevPlans => ({
+          ...prevPlans,
+          [currentFloor]: response.assets[0].uri,
+        }));
       }
     });
   };
 
   const renderHeatmap = () => {
-    const cellWidth = imageSize.width / GRID_SIZE;
-    const cellHeight = imageSize.height / GRID_SIZE;
-    const maxIntensity = Math.max(...floorPlanWifiData.flat());
+    if (!floorPlans[currentFloor] || !floorPlanWifiData[currentFloor])
+      return null;
 
-    return floorPlanWifiData.flatMap((row, y) =>
-      row.map((intensity, x) => {
-        const opacity = intensity / maxIntensity;
-        return (
-          <Rect
-            key={`${x}-${y}`}
-            x={x * cellWidth}
-            y={y * cellHeight}
-            width={cellWidth}
-            height={cellHeight}
-            fill="red"
-            opacity={opacity}
+    const floorPlanImage = Image.resolveAssetSource({
+      uri: floorPlans[currentFloor],
+    });
+    const cellWidth = floorPlanImage.width / GRID_SIZE;
+    const cellHeight = floorPlanImage.height / GRID_SIZE;
+    const maxIntensity = Math.max(...floorPlanWifiData[currentFloor].flat());
+
+    return (
+      <>
+        {floorPlanWifiData[currentFloor].flatMap((row, y) =>
+          row.map((intensity, x) => {
+            const opacity = intensity / maxIntensity;
+            return (
+              <Rect
+                key={`${x}-${y}`}
+                x={x * cellWidth}
+                y={y * cellHeight}
+                width={cellWidth}
+                height={cellHeight}
+                fill="red"
+                opacity={opacity}
+              />
+            );
+          }),
+        )}
+        {currentPositionOnFloorPlan && (
+          <Circle
+            cx={currentPositionOnFloorPlan.x * cellWidth}
+            cy={currentPositionOnFloorPlan.y * cellHeight}
+            r={5}
+            fill="blue"
           />
-        );
-      }),
+        )}
+      </>
     );
+  };
+
+  const addNewFloor = () => {
+    if (newFloorName.trim() !== '') {
+      setFloorPlans(prevPlans => ({...prevPlans, [newFloorName]: null}));
+      setCurrentFloor(newFloorName);
+      setNewFloorName('');
+      setIsAddingFloor(false);
+    }
   };
 
   return (
@@ -227,7 +279,11 @@ const App = () => {
               showsUserLocation={true}>
               {wifiData.length > 0 && (
                 <Heatmap
-                  points={wifiData}
+                  points={wifiData.map(data => ({
+                    latitude: data.latitude,
+                    longitude: data.longitude,
+                    weight: Math.abs(data.level),
+                  }))}
                   radius={20}
                   opacity={0.8}
                   maxIntensity={100}
@@ -243,18 +299,35 @@ const App = () => {
 
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Floor Plan Heatmap</Text>
+            <View style={styles.floorSelection}>
+              <Picker
+                selectedValue={currentFloor}
+                style={styles.picker}
+                onValueChange={itemValue => setCurrentFloor(itemValue)}>
+                {Object.keys(floorPlans).map(floor => (
+                  <Picker.Item
+                    key={floor}
+                    label={`Floor ${floor}`}
+                    value={floor}
+                  />
+                ))}
+              </Picker>
+              <TouchableOpacity
+                style={styles.addFloorButton}
+                onPress={() => setIsAddingFloor(true)}>
+                <Text style={styles.buttonText}>+</Text>
+              </TouchableOpacity>
+            </View>
             <TouchableOpacity style={styles.button} onPress={uploadFloorPlan}>
               <Text style={styles.buttonText}>Upload Floor Plan</Text>
             </TouchableOpacity>
-            {floorPlan && (
+            {floorPlans[currentFloor] && (
               <View style={styles.floorPlanContainer}>
-                <Image source={{uri: floorPlan}} style={styles.floorPlan} />
-                <Svg
-                  style={StyleSheet.absoluteFill}
-                  width={imageSize.width}
-                  height={imageSize.height}>
-                  {renderHeatmap()}
-                </Svg>
+                <Image
+                  source={{uri: floorPlans[currentFloor]}}
+                  style={styles.floorPlan}
+                />
+                <Svg style={StyleSheet.absoluteFill}>{renderHeatmap()}</Svg>
               </View>
             )}
           </View>
@@ -263,6 +336,31 @@ const App = () => {
             <Text style={styles.cardTitle}>WiFi Data Points</Text>
             <DataTable data={wifiData} />
           </View>
+
+          <Modal
+            visible={isAddingFloor}
+            transparent={true}
+            animationType="slide">
+            <View style={styles.modalContainer}>
+              <View style={styles.modalContent}>
+                <Text style={styles.modalTitle}>Add New Floor</Text>
+                <TextInput
+                  style={styles.input}
+                  onChangeText={setNewFloorName}
+                  value={newFloorName}
+                  placeholder="Enter floor name or number"
+                />
+                <TouchableOpacity style={styles.button} onPress={addNewFloor}>
+                  <Text style={styles.buttonText}>Add Floor</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={[styles.button, styles.cancelButton]}
+                  onPress={() => setIsAddingFloor(false)}>
+                  <Text style={styles.buttonText}>Cancel</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
         </>
       )}
     </ScrollView>
@@ -352,6 +450,52 @@ const styles = StyleSheet.create({
   tableCell: {
     flex: 1,
     textAlign: 'center',
+  },
+  floorSelection: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  picker: {
+    flex: 1,
+    height: 50,
+  },
+  addFloorButton: {
+    backgroundColor: '#3399FF',
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 10,
+  },
+  modalContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  modalContent: {
+    backgroundColor: 'white',
+    padding: 20,
+    borderRadius: 10,
+    width: '80%',
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 15,
+    textAlign: 'center',
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: '#ddd',
+    borderRadius: 5,
+    padding: 10,
+    marginBottom: 15,
+  },
+  cancelButton: {
+    backgroundColor: '#999',
   },
 });
 
