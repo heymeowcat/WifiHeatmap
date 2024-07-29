@@ -198,40 +198,57 @@ const App = () => {
   };
 
   const startCapturing = () => {
-    if (!isWifiConnected) {
-      setErrorMsg('Please connect to a WiFi network before capturing data.');
-      return;
-    }
     setIsCapturing(true);
     setWifiData([]);
-    watchId.current = Geolocation.watchPosition(
-      position => {
-        if (isMounted.current) {
-          const {latitude, longitude, altitude} = position.coords;
-          setCurrentLocation({latitude, longitude});
-          scanWifi({latitude, longitude, altitude});
-          updatePositionOnFloorPlan(latitude, longitude);
-        }
-      },
-      error => {
-        if (isMounted.current) {
-          setErrorMsg(error.message);
-        }
-      },
-      {
-        enableHighAccuracy: true,
-        distanceFilter: 2,
-        interval: 5000,
-        fastestInterval: 2000,
-      },
-    );
+
+    if (Platform.OS === 'android' && !__DEV__) {
+      // Real device logic (unchanged)
+      if (!isWifiConnected) {
+        setErrorMsg('Please connect to a WiFi network before capturing data.');
+        return;
+      }
+      setIsCapturing(true);
+      setWifiData([]);
+      watchId.current = Geolocation.watchPosition(
+        position => {
+          if (isMounted.current) {
+            const {latitude, longitude, altitude} = position.coords;
+            setCurrentLocation({latitude, longitude});
+            scanWifi({latitude, longitude, altitude});
+            updatePositionOnFloorPlan(latitude, longitude);
+          }
+        },
+        error => {
+          if (isMounted.current) {
+            setErrorMsg(error.message);
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          distanceFilter: 2,
+          interval: 5000,
+          fastestInterval: 2000,
+        },
+      );
+    } else {
+      // Emulator or development mode
+      const mockData = generateMockWifiData();
+      setWifiData(mockData);
+      if (!currentLocation) {
+        setCurrentLocation({
+          latitude: mockData[0].latitude,
+          longitude: mockData[0].longitude,
+        });
+      }
+      generateHeatmap();
+    }
   };
 
   const stopCapturing = async () => {
     setIsCapturing(false);
     if (watchId.current) Geolocation.clearWatch(watchId.current);
     await saveWifiData();
-    updateHeatmap();
+    generateHeatmap();
   };
 
   const scanWifi = async location => {
@@ -340,82 +357,173 @@ const App = () => {
   const generateHeatmap = () => {
     const newFloorPlanWifiData = {...floorPlanWifiData};
     if (!newFloorPlanWifiData[currentFloor]) {
-      newFloorPlanWifiData[currentFloor] = Array(GRID_SIZE)
-        .fill()
-        .map(() => Array(GRID_SIZE).fill(0));
+      newFloorPlanWifiData[currentFloor] = [];
     }
 
-    const {width, height} = floorPlanDimensions[currentFloor];
+    const dimensions = floorPlanDimensions[currentFloor] || {
+      width: 300,
+      height: 200,
+    };
+    const {width, height} = dimensions;
 
+    // Store raw data points
     wifiData.forEach(data => {
-      const gridX = Math.floor(
-        ((data.longitude - currentLocation.longitude) / 0.0001) *
-          (width / GRID_SIZE) +
-          GRID_SIZE / 2,
-      );
-      const gridY = Math.floor(
-        ((data.latitude - currentLocation.latitude) / 0.0001) *
-          (height / GRID_SIZE) +
-          GRID_SIZE / 2,
-      );
-      if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
-        newFloorPlanWifiData[currentFloor][gridY][gridX] = Math.max(
-          newFloorPlanWifiData[currentFloor][gridY][gridX],
-          Math.abs(data.signalStrength),
-        );
-      }
+      const x =
+        ((data.longitude - (currentLocation?.longitude || 0)) / 0.0001) * width;
+      const y =
+        ((data.latitude - (currentLocation?.latitude || 0)) / 0.0001) * height;
+      newFloorPlanWifiData[currentFloor].push({
+        x,
+        y,
+        strength: data.signalStrength,
+      });
     });
 
     setFloorPlanWifiData(newFloorPlanWifiData);
   };
 
-  const renderHeatmap = () => {
-    if (
-      !floorPlans[currentFloor] ||
-      !floorPlanWifiData[currentFloor] ||
-      !floorPlanDimensions[currentFloor]
-    )
-      return null;
+  const interpolateSignalStrength = (x, y, dataPoints) => {
+    const MAX_DISTANCE = 100; // Maximum distance to consider for interpolation
+    let totalWeight = 0;
+    let weightedSum = 0;
 
-    const {width, height} = floorPlanDimensions[currentFloor];
-    const cellWidth = width / GRID_SIZE;
-    const cellHeight = height / GRID_SIZE;
-    const maxIntensity = Math.max(
-      ...floorPlanWifiData[currentFloor].flat().filter(v => !isNaN(v)),
-    );
+    dataPoints.forEach(point => {
+      const distance = Math.sqrt(
+        Math.pow(x - point.x, 2) + Math.pow(y - point.y, 2),
+      );
+      if (distance <= MAX_DISTANCE) {
+        const weight = 1 / (distance + 1); // Add 1 to avoid division by zero
+        totalWeight += weight;
+        weightedSum += weight * point.strength;
+      }
+    });
+
+    return totalWeight > 0 ? weightedSum / totalWeight : null;
+  };
+
+  const renderHeatmap = () => {
+    if (!floorPlanWifiData[currentFloor]) return null;
+
+    const dimensions = floorPlanDimensions[currentFloor] || {
+      width: 300,
+      height: 200,
+    };
+    const {width, height} = dimensions;
+    const cellSize = 10; // Size of each heatmap cell
+    const columns = Math.floor(width / cellSize);
+    const rows = Math.floor(height / cellSize);
+
+    const dataPoints = floorPlanWifiData[currentFloor];
+
+    const heatmapCells = [];
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < columns; x++) {
+        const centerX = (x + 0.5) * cellSize;
+        const centerY = (y + 0.5) * cellSize;
+        const strength = interpolateSignalStrength(
+          centerX,
+          centerY,
+          dataPoints,
+        );
+
+        if (strength !== null) {
+          const color = getColorForSignalStrength(strength);
+          heatmapCells.push(
+            <Rect
+              key={`${x}-${y}`}
+              x={x * cellSize}
+              y={y * cellSize}
+              width={cellSize}
+              height={cellSize}
+              fill={color}
+              opacity={0.7}
+            />,
+          );
+        }
+      }
+    }
 
     return (
       <>
-        {floorPlanWifiData[currentFloor].flatMap((row, y) =>
-          row.map((intensity, x) => {
-            if (isNaN(intensity) || intensity === 0) return null;
-            const opacity = maxIntensity > 0 ? intensity / maxIntensity : 0;
-            const rectX = x * cellWidth;
-            const rectY = y * cellHeight;
-
-            return (
-              <Rect
-                key={`${x}-${y}`}
-                x={rectX}
-                y={rectY}
-                width={cellWidth}
-                height={cellHeight}
-                fill="red"
-                opacity={opacity}
-              />
-            );
-          }),
-        )}
-        {markedLocations[currentFloor]?.map((location, index) => (
-          <Circle
-            key={index}
-            cx={location.x * width}
-            cy={location.y * height}
-            r={5}
-            fill="blue"
-          />
+        {heatmapCells}
+        {dataPoints.map((point, index) => (
+          <Circle key={index} cx={point.x} cy={point.y} r={3} fill="black" />
         ))}
       </>
+    );
+  };
+
+  const getColorForSignalStrength = strength => {
+    // Assuming strength ranges from -100 dBm (weak) to -30 dBm (strong)
+    const normalizedStrength = (strength + 100) / 70; // Normalize to 0-1 range
+    const hue = (1 - normalizedStrength) * 240; // 240 for blue (weak), 0 for red (strong)
+    return `hsl(${hue}, 100%, 50%)`;
+  };
+
+  const generateMockWifiData = () => {
+    const mockData = [];
+    const defaultWidth = 300;
+    const defaultHeight = 200;
+
+    const dimensions = floorPlanDimensions[currentFloor] || {
+      width: defaultWidth,
+      height: defaultHeight,
+    };
+    const {width, height} = dimensions;
+
+    // Generate a few "WiFi sources"
+    const sources = [
+      {x: width * 0.2, y: height * 0.2, strength: -40},
+      {x: width * 0.8, y: height * 0.8, strength: -45},
+      {x: width * 0.5, y: height * 0.5, strength: -35},
+    ];
+
+    // Generate data points
+    for (let i = 0; i < 100; i++) {
+      const x = Math.random() * width;
+      const y = Math.random() * height;
+
+      // Calculate signal strength based on distance from sources
+      let signalStrength = -100; // Start with a weak signal
+      sources.forEach(source => {
+        const distance = Math.sqrt(
+          Math.pow(x - source.x, 2) + Math.pow(y - source.y, 2),
+        );
+        const strength = source.strength - 20 * Math.log10(distance + 1);
+        signalStrength = Math.max(signalStrength, strength);
+      });
+
+      mockData.push({
+        latitude:
+          (currentLocation?.latitude || 0) +
+          ((y - height / 2) * 0.0001) / height,
+        longitude:
+          (currentLocation?.longitude || 0) +
+          ((x - width / 2) * 0.0001) / width,
+        signalStrength: Math.min(-30, Math.max(-100, signalStrength)),
+      });
+    }
+
+    return mockData;
+  };
+
+  const renderHeatmapLegend = () => {
+    return (
+      <View style={styles.legendContainer}>
+        <Text>Signal Strength</Text>
+        <View style={styles.legendGradient}>
+          <LinearGradient
+            colors={['blue', 'cyan', 'green', 'yellow', 'red']}
+            start={{x: 0, y: 0}}
+            end={{x: 1, y: 0}}
+            style={{flex: 1}}
+          />
+        </View>
+        <View style={styles.legendLabels}>
+          <Text style={styles.legendText}>-100 dBm</Text>
+          <Text style={styles.legendText}>-30 dBm</Text>
+        </View>
+      </View>
     );
   };
 
@@ -728,6 +836,24 @@ const styles = StyleSheet.create({
   zoomableView: {
     width: '100%',
     height: 300,
+  },
+  legendContainer: {
+    marginTop: 10,
+    alignItems: 'center',
+    width: '100%',
+  },
+  legendGradient: {
+    width: '100%',
+    height: 20,
+    marginVertical: 5,
+  },
+  legendLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  legendText: {
+    fontSize: 12,
   },
 });
 
