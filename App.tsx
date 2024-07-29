@@ -18,26 +18,27 @@ import Geolocation from '@react-native-community/geolocation';
 import {launchImageLibrary} from 'react-native-image-picker';
 import Svg, {Rect, Circle} from 'react-native-svg';
 import {Picker} from '@react-native-picker/picker';
-
-const {width} = Dimensions.get('window');
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const GRID_SIZE = 20;
 
 const DataTable = ({data}) => (
   <View style={styles.tableContainer}>
     <View style={styles.tableHeader}>
-      <Text style={styles.tableHeaderCell}>SSID</Text>
-      <Text style={styles.tableHeaderCell}>BSSID</Text>
-      <Text style={styles.tableHeaderCell}>Strength</Text>
-      <Text style={styles.tableHeaderCell}>Channel</Text>
+      <Text style={styles.tableHeaderCell}>Latitude</Text>
+      <Text style={styles.tableHeaderCell}>Longitude</Text>
+      <Text style={styles.tableHeaderCell}>Altitude</Text>
+      <Text style={styles.tableHeaderCell}>Signal Strength</Text>
     </View>
     <ScrollView style={styles.tableBody}>
       {data.map((point, index) => (
         <View key={index} style={styles.tableRow}>
-          <Text style={styles.tableCell}>{point.SSID}</Text>
-          <Text style={styles.tableCell}>{point.BSSID}</Text>
-          <Text style={styles.tableCell}>{point.level} dBm</Text>
-          <Text style={styles.tableCell}>{point.frequency}</Text>
+          <Text style={styles.tableCell}>{point.latitude.toFixed(6)}</Text>
+          <Text style={styles.tableCell}>{point.longitude.toFixed(6)}</Text>
+          <Text style={styles.tableCell}>
+            {point.altitude?.toFixed(2) || 'N/A'}
+          </Text>
+          <Text style={styles.tableCell}>{point.signalStrength} dBm</Text>
         </View>
       ))}
     </ScrollView>
@@ -58,12 +59,18 @@ const App = () => {
   const [newFloorName, setNewFloorName] = useState('');
   const [currentPositionOnFloorPlan, setCurrentPositionOnFloorPlan] =
     useState(null);
+  const [isWifiConnected, setIsWifiConnected] = useState(false);
+  const [currentSSID, setCurrentSSID] = useState('');
+  const [currentBSSID, setCurrentBSSID] = useState('');
+
+  const [floorPlanDimensions, setFloorPlanDimensions] = useState({});
 
   const watchId = useRef(null);
   const isMounted = useRef(true);
 
   useEffect(() => {
     requestLocationPermission();
+    checkWifiConnection();
     return () => {
       isMounted.current = false;
       if (watchId.current) Geolocation.clearWatch(watchId.current);
@@ -96,8 +103,36 @@ const App = () => {
     }
   };
 
+  const checkWifiConnection = async () => {
+    try {
+      const ssid = await WifiManager.getCurrentWifiSSID();
+      setIsWifiConnected(!!ssid);
+      setConnectedDevice(ssid || 'Not connected');
+      setCurrentSSID(ssid || 'N/A');
+
+      // Check if getCurrentWifiBSSID is available
+      if (typeof WifiManager.getCurrentWifiBSSID === 'function') {
+        const bssid = await WifiManager.getCurrentWifiBSSID();
+        setCurrentBSSID(bssid || 'N/A');
+      } else {
+        setCurrentBSSID('Not available');
+      }
+    } catch (error) {
+      console.error('Error checking WiFi connection:', error);
+      setIsWifiConnected(false);
+      setConnectedDevice('Not connected');
+      setCurrentSSID('N/A');
+      setCurrentBSSID('N/A');
+    }
+  };
+
   const startCapturing = () => {
+    if (!isWifiConnected) {
+      setErrorMsg('Please connect to a WiFi network before capturing data.');
+      return;
+    }
     setIsCapturing(true);
+    setWifiData([]);
     watchId.current = Geolocation.watchPosition(
       position => {
         if (isMounted.current) {
@@ -121,9 +156,11 @@ const App = () => {
     );
   };
 
-  const stopCapturing = () => {
+  const stopCapturing = async () => {
     setIsCapturing(false);
     if (watchId.current) Geolocation.clearWatch(watchId.current);
+    await saveWifiData();
+    updateHeatmap();
   };
 
   const scanWifi = async location => {
@@ -134,37 +171,15 @@ const App = () => {
         typeof wifiList === 'string' ? JSON.parse(wifiList) : wifiList;
 
       const newWifiData = parsedWifiList.map(wifi => ({
-        ...wifi,
         latitude: location.latitude,
         longitude: location.longitude,
         altitude: location.altitude,
+        signalStrength: wifi.level,
+        SSID: wifi.SSID,
+        BSSID: wifi.BSSID,
       }));
 
       setWifiData(prevData => [...prevData, ...newWifiData]);
-
-      const gridX = Math.floor(Math.random() * GRID_SIZE);
-      const gridY = Math.floor(Math.random() * GRID_SIZE);
-      const avgIntensity =
-        newWifiData.reduce((sum, data) => sum + Math.abs(data.level), 0) /
-        newWifiData.length;
-
-      setFloorPlanWifiData(prevData => {
-        const newData = {...prevData};
-        if (!newData[currentFloor]) {
-          newData[currentFloor] = Array(GRID_SIZE)
-            .fill()
-            .map(() => Array(GRID_SIZE).fill(0));
-        }
-        newData[currentFloor][gridY][gridX] = Math.max(
-          newData[currentFloor][gridY][gridX],
-          avgIntensity,
-        );
-        return newData;
-      });
-
-      const connectedWifi = await WifiManager.getCurrentWifiSSID();
-      setConnectedDevice(connectedWifi);
-
       setScanStatus('Idle');
     } catch (error) {
       setErrorMsg('Failed to scan WiFi: ' + error.message);
@@ -172,12 +187,49 @@ const App = () => {
     }
   };
 
+  const saveWifiData = async () => {
+    try {
+      await AsyncStorage.setItem('wifiData', JSON.stringify(wifiData));
+    } catch (error) {
+      console.error('Error saving WiFi data:', error);
+    }
+  };
+
+  const updateHeatmap = () => {
+    const newFloorPlanWifiData = {...floorPlanWifiData};
+    if (!newFloorPlanWifiData[currentFloor]) {
+      newFloorPlanWifiData[currentFloor] = Array(GRID_SIZE)
+        .fill()
+        .map(() => Array(GRID_SIZE).fill(0));
+    }
+
+    wifiData.forEach(data => {
+      const gridX = Math.floor(
+        (data.longitude - currentLocation.longitude) * 1000 + GRID_SIZE / 2,
+      );
+      const gridY = Math.floor(
+        (data.latitude - currentLocation.latitude) * 1000 + GRID_SIZE / 2,
+      );
+      if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
+        newFloorPlanWifiData[currentFloor][gridY][gridX] = Math.max(
+          newFloorPlanWifiData[currentFloor][gridY][gridX],
+          Math.abs(data.signalStrength),
+        );
+      }
+    });
+
+    setFloorPlanWifiData(newFloorPlanWifiData);
+  };
+
   const updatePositionOnFloorPlan = (latitude, longitude) => {
-    // This is a simplified example. You would need to implement proper
-    // coordinate transformation based on your floor plan's scale and orientation.
+    if (!currentLocation) return;
     const x = (longitude - currentLocation.longitude) * 1000 + GRID_SIZE / 2;
     const y = (latitude - currentLocation.latitude) * 1000 + GRID_SIZE / 2;
-    setCurrentPositionOnFloorPlan({x, y});
+    if (!isNaN(x) && !isNaN(y)) {
+      setCurrentPositionOnFloorPlan({x, y});
+    } else {
+      console.warn('Invalid position on floor plan', {x, y});
+    }
   };
 
   const uploadFloorPlan = () => {
@@ -187,35 +239,58 @@ const App = () => {
       } else if (response.error) {
         console.log('ImagePicker Error: ', response.error);
       } else if (response.assets && response.assets.length > 0) {
+        const uri = response.assets[0].uri;
         setFloorPlans(prevPlans => ({
           ...prevPlans,
-          [currentFloor]: response.assets[0].uri,
+          [currentFloor]: uri,
         }));
+
+        // Preload the image to get its dimensions
+        Image.getSize(
+          uri,
+          (width, height) => {
+            setFloorPlanDimensions(prevDimensions => ({
+              ...prevDimensions,
+              [currentFloor]: {width, height},
+            }));
+          },
+          error => {
+            console.error('Error getting image dimensions:', error);
+          },
+        );
       }
     });
   };
 
   const renderHeatmap = () => {
-    if (!floorPlans[currentFloor] || !floorPlanWifiData[currentFloor])
+    if (
+      !floorPlans[currentFloor] ||
+      !floorPlanWifiData[currentFloor] ||
+      !floorPlanDimensions[currentFloor]
+    )
       return null;
 
-    const floorPlanImage = Image.resolveAssetSource({
-      uri: floorPlans[currentFloor],
-    });
-    const cellWidth = floorPlanImage.width / GRID_SIZE;
-    const cellHeight = floorPlanImage.height / GRID_SIZE;
-    const maxIntensity = Math.max(...floorPlanWifiData[currentFloor].flat());
+    const {width, height} = floorPlanDimensions[currentFloor];
+    const cellWidth = width / GRID_SIZE;
+    const cellHeight = height / GRID_SIZE;
+    const maxIntensity = Math.max(
+      ...floorPlanWifiData[currentFloor].flat().filter(v => !isNaN(v)),
+    );
 
     return (
       <>
         {floorPlanWifiData[currentFloor].flatMap((row, y) =>
           row.map((intensity, x) => {
-            const opacity = intensity / maxIntensity;
+            if (isNaN(intensity) || intensity === 0) return null;
+            const opacity = maxIntensity > 0 ? intensity / maxIntensity : 0;
+            const rectX = x * cellWidth;
+            const rectY = y * cellHeight;
+
             return (
               <Rect
                 key={`${x}-${y}`}
-                x={x * cellWidth}
-                y={y * cellHeight}
+                x={rectX}
+                y={rectY}
                 width={cellWidth}
                 height={cellHeight}
                 fill="red"
@@ -224,14 +299,16 @@ const App = () => {
             );
           }),
         )}
-        {currentPositionOnFloorPlan && (
-          <Circle
-            cx={currentPositionOnFloorPlan.x * cellWidth}
-            cy={currentPositionOnFloorPlan.y * cellHeight}
-            r={5}
-            fill="blue"
-          />
-        )}
+        {currentPositionOnFloorPlan &&
+          !isNaN(currentPositionOnFloorPlan.x) &&
+          !isNaN(currentPositionOnFloorPlan.y) && (
+            <Circle
+              cx={currentPositionOnFloorPlan.x * cellWidth}
+              cy={currentPositionOnFloorPlan.y * cellHeight}
+              r={5}
+              fill="blue"
+            />
+          )}
       </>
     );
   };
@@ -253,18 +330,24 @@ const App = () => {
         <>
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Connected Device</Text>
-            <Text>{connectedDevice || 'Not connected'}</Text>
             <Text>Status: {scanStatus}</Text>
+            <Text>SSID: {currentSSID}</Text>
+            <Text>BSSID: {currentBSSID}</Text>
             <TouchableOpacity
-              style={[styles.button, isCapturing && styles.stopButton]}
-              onPress={isCapturing ? stopCapturing : startCapturing}>
+              style={[
+                styles.button,
+                isCapturing && styles.stopButton,
+                !isWifiConnected && styles.disabledButton,
+              ]}
+              onPress={isCapturing ? stopCapturing : startCapturing}
+              disabled={!isWifiConnected}>
               <Text style={styles.buttonText}>
                 {isCapturing ? 'Stop Capturing' : 'Start Capturing'}
               </Text>
             </TouchableOpacity>
           </View>
 
-          <View style={styles.card}>
+          {/* <View style={styles.card}>
             <Text style={styles.cardTitle}>Google Maps</Text>
             <MapView
               style={styles.map}
@@ -282,7 +365,7 @@ const App = () => {
                   points={wifiData.map(data => ({
                     latitude: data.latitude,
                     longitude: data.longitude,
-                    weight: Math.abs(data.level),
+                    weight: Math.abs(data.signalStrength),
                   }))}
                   radius={20}
                   opacity={0.8}
@@ -295,7 +378,7 @@ const App = () => {
                 <Marker coordinate={currentLocation} title="You are here" />
               )}
             </MapView>
-          </View>
+          </View> */}
 
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Floor Plan Heatmap</Text>
