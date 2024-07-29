@@ -11,14 +11,15 @@ import {
   Dimensions,
   TextInput,
   Modal,
+  PanResponder,
 } from 'react-native';
 import WifiManager from 'react-native-wifi-reborn';
-import MapView, {Heatmap, Marker} from 'react-native-maps';
 import Geolocation from '@react-native-community/geolocation';
 import {launchImageLibrary} from 'react-native-image-picker';
 import Svg, {Rect, Circle} from 'react-native-svg';
 import {Picker} from '@react-native-picker/picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import ReactNativeZoomableView from '@openspacelabs/react-native-zoomable-view/src/ReactNativeZoomableView';
 
 const GRID_SIZE = 20;
 
@@ -64,6 +65,22 @@ const App = () => {
   const [currentBSSID, setCurrentBSSID] = useState('');
 
   const [floorPlanDimensions, setFloorPlanDimensions] = useState({});
+  const [markedLocations, setMarkedLocations] = useState({});
+  const [isMarkingMode, setIsMarkingMode] = useState(false);
+
+  const [panOffset, setPanOffset] = useState({x: 0, y: 0});
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderMove: (_, gestureState) => {
+        setPanOffset(prevOffset => ({
+          x: prevOffset.x + gestureState.dx,
+          y: prevOffset.y + gestureState.dy,
+        }));
+      },
+    }),
+  ).current;
 
   const watchId = useRef(null);
   const isMounted = useRef(true);
@@ -76,6 +93,60 @@ const App = () => {
       if (watchId.current) Geolocation.clearWatch(watchId.current);
     };
   }, []);
+
+  const renderFloorPlan = () => {
+    if (floorPlans[currentFloor] && floorPlanDimensions[currentFloor]) {
+      return (
+        <ReactNativeZoomableView
+          maxZoom={3}
+          minZoom={0.5}
+          zoomStep={0.5}
+          initialZoom={1}
+          bindToBorders={true}
+          style={styles.zoomableView}>
+          <View {...panResponder.panHandlers}>
+            <Image
+              source={{uri: floorPlans[currentFloor]}}
+              style={[
+                styles.floorPlan,
+                {
+                  width: floorPlanDimensions[currentFloor].width,
+                  height: floorPlanDimensions[currentFloor].height,
+                  transform: [
+                    {translateX: panOffset.x},
+                    {translateY: panOffset.y},
+                  ],
+                },
+              ]}
+            />
+            <Svg
+              style={[
+                StyleSheet.absoluteFill,
+                {
+                  width: floorPlanDimensions[currentFloor].width,
+                  height: floorPlanDimensions[currentFloor].height,
+                  transform: [
+                    {translateX: panOffset.x},
+                    {translateY: panOffset.y},
+                  ],
+                },
+              ]}>
+              {renderHeatmap()}
+              {currentPositionOnFloorPlan && (
+                <Circle
+                  cx={currentPositionOnFloorPlan.x}
+                  cy={currentPositionOnFloorPlan.y}
+                  r={5}
+                  fill="blue"
+                />
+              )}
+            </Svg>
+          </View>
+        </ReactNativeZoomableView>
+      );
+    }
+    return null;
+  };
 
   const requestLocationPermission = async () => {
     if (Platform.OS === 'android') {
@@ -222,14 +293,9 @@ const App = () => {
   };
 
   const updatePositionOnFloorPlan = (latitude, longitude) => {
-    if (!currentLocation) return;
-    const x = (longitude - currentLocation.longitude) * 1000 + GRID_SIZE / 2;
-    const y = (latitude - currentLocation.latitude) * 1000 + GRID_SIZE / 2;
-    if (!isNaN(x) && !isNaN(y)) {
-      setCurrentPositionOnFloorPlan({x, y});
-    } else {
-      console.warn('Invalid position on floor plan', {x, y});
-    }
+    if (!floorPlanDimensions[currentFloor]) return;
+    const {width, height} = floorPlanDimensions[currentFloor];
+    setCurrentPositionOnFloorPlan({x: width / 2, y: height / 2});
   };
 
   const uploadFloorPlan = () => {
@@ -245,7 +311,6 @@ const App = () => {
           [currentFloor]: uri,
         }));
 
-        // Preload the image to get its dimensions
         Image.getSize(
           uri,
           (width, height) => {
@@ -260,6 +325,48 @@ const App = () => {
         );
       }
     });
+  };
+
+  const markLocation = (x, y) => {
+    if (isMarkingMode) {
+      setMarkedLocations(prevLocations => ({
+        ...prevLocations,
+        [currentFloor]: [...(prevLocations[currentFloor] || []), {x, y}],
+      }));
+      setIsMarkingMode(false);
+    }
+  };
+
+  const generateHeatmap = () => {
+    const newFloorPlanWifiData = {...floorPlanWifiData};
+    if (!newFloorPlanWifiData[currentFloor]) {
+      newFloorPlanWifiData[currentFloor] = Array(GRID_SIZE)
+        .fill()
+        .map(() => Array(GRID_SIZE).fill(0));
+    }
+
+    const {width, height} = floorPlanDimensions[currentFloor];
+
+    wifiData.forEach(data => {
+      const gridX = Math.floor(
+        ((data.longitude - currentLocation.longitude) / 0.0001) *
+          (width / GRID_SIZE) +
+          GRID_SIZE / 2,
+      );
+      const gridY = Math.floor(
+        ((data.latitude - currentLocation.latitude) / 0.0001) *
+          (height / GRID_SIZE) +
+          GRID_SIZE / 2,
+      );
+      if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
+        newFloorPlanWifiData[currentFloor][gridY][gridX] = Math.max(
+          newFloorPlanWifiData[currentFloor][gridY][gridX],
+          Math.abs(data.signalStrength),
+        );
+      }
+    });
+
+    setFloorPlanWifiData(newFloorPlanWifiData);
   };
 
   const renderHeatmap = () => {
@@ -299,16 +406,15 @@ const App = () => {
             );
           }),
         )}
-        {currentPositionOnFloorPlan &&
-          !isNaN(currentPositionOnFloorPlan.x) &&
-          !isNaN(currentPositionOnFloorPlan.y) && (
-            <Circle
-              cx={currentPositionOnFloorPlan.x * cellWidth}
-              cy={currentPositionOnFloorPlan.y * cellHeight}
-              r={5}
-              fill="blue"
-            />
-          )}
+        {markedLocations[currentFloor]?.map((location, index) => (
+          <Circle
+            key={index}
+            cx={location.x * width}
+            cy={location.y * height}
+            r={5}
+            fill="blue"
+          />
+        ))}
       </>
     );
   };
@@ -404,14 +510,53 @@ const App = () => {
             <TouchableOpacity style={styles.button} onPress={uploadFloorPlan}>
               <Text style={styles.buttonText}>Upload Floor Plan</Text>
             </TouchableOpacity>
-            {floorPlans[currentFloor] && (
-              <View style={styles.floorPlanContainer}>
-                <Image
-                  source={{uri: floorPlans[currentFloor]}}
-                  style={styles.floorPlan}
-                />
-                <Svg style={StyleSheet.absoluteFill}>{renderHeatmap()}</Svg>
-              </View>
+            {/* <TouchableOpacity
+              style={[styles.button, isMarkingMode && styles.activeButton]}
+              onPress={() => setIsMarkingMode(!isMarkingMode)}>
+              <Text style={styles.buttonText}>
+                {isMarkingMode ? 'Cancel Marking' : 'Mark Location'}
+              </Text>
+            </TouchableOpacity> */}
+            <TouchableOpacity style={styles.button} onPress={generateHeatmap}>
+              <Text style={styles.buttonText}>Generate Heatmap</Text>
+            </TouchableOpacity>
+            {floorPlans[currentFloor] && floorPlanDimensions[currentFloor] && (
+              <ReactNativeZoomableView
+                maxZoom={3}
+                minZoom={0.5}
+                zoomStep={0.5}
+                initialZoom={1}
+                bindToBorders={true}
+                style={styles.zoomableView}>
+                <TouchableOpacity
+                  onPress={event => {
+                    const {locationX, locationY} = event.nativeEvent;
+                    const {width, height} = floorPlanDimensions[currentFloor];
+                    markLocation(locationX / width, locationY / height);
+                  }}
+                  activeOpacity={1}>
+                  <Image
+                    source={{uri: floorPlans[currentFloor]}}
+                    style={[
+                      styles.floorPlan,
+                      {
+                        width: floorPlanDimensions[currentFloor].width,
+                        height: floorPlanDimensions[currentFloor].height,
+                      },
+                    ]}
+                  />
+                  <Svg
+                    style={[
+                      StyleSheet.absoluteFill,
+                      {
+                        width: floorPlanDimensions[currentFloor].width,
+                        height: floorPlanDimensions[currentFloor].height,
+                      },
+                    ]}>
+                    {renderHeatmap()}
+                  </Svg>
+                </TouchableOpacity>
+              </ReactNativeZoomableView>
             )}
           </View>
 
@@ -579,6 +724,10 @@ const styles = StyleSheet.create({
   },
   cancelButton: {
     backgroundColor: '#999',
+  },
+  zoomableView: {
+    width: '100%',
+    height: 300,
   },
 });
 
