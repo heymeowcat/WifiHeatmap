@@ -8,10 +8,8 @@ import {
   Image,
   TouchableOpacity,
   ScrollView,
-  Dimensions,
   TextInput,
   Modal,
-  PanResponder,
 } from 'react-native';
 import WifiManager from 'react-native-wifi-reborn';
 import Geolocation from '@react-native-community/geolocation';
@@ -34,8 +32,8 @@ const DataTable = ({data}) => (
     <ScrollView style={styles.tableBody}>
       {data.map((point, index) => (
         <View key={index} style={styles.tableRow}>
-          <Text style={styles.tableCell}>{point.latitude.toFixed(6)}</Text>
-          <Text style={styles.tableCell}>{point.longitude.toFixed(6)}</Text>
+          <Text style={styles.tableCell}>{point.x?.toFixed(2) || 'N/A'}</Text>
+          <Text style={styles.tableCell}>{point.y?.toFixed(2) || 'N/A'}</Text>
           <Text style={styles.tableCell}>
             {point.altitude?.toFixed(2) || 'N/A'}
           </Text>
@@ -63,90 +61,86 @@ const App = () => {
   const [isWifiConnected, setIsWifiConnected] = useState(false);
   const [currentSSID, setCurrentSSID] = useState('');
   const [currentBSSID, setCurrentBSSID] = useState('');
-
   const [floorPlanDimensions, setFloorPlanDimensions] = useState({});
-  const [markedLocations, setMarkedLocations] = useState({});
+
+  const [markerPosition, setMarkerPosition] = useState(null);
   const [isMarkingMode, setIsMarkingMode] = useState(false);
+  const [initialPosition, setInitialPosition] = useState(null);
+  const [lastKnownLocation, setLastKnownLocation] = useState(null);
 
-  const [panOffset, setPanOffset] = useState({x: 0, y: 0});
+  const [lastUpdatedPosition, setLastUpdatedPosition] = useState(null);
 
-  const panResponder = useRef(
-    PanResponder.create({
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderMove: (_, gestureState) => {
-        setPanOffset(prevOffset => ({
-          x: prevOffset.x + gestureState.dx,
-          y: prevOffset.y + gestureState.dy,
-        }));
-      },
-    }),
-  ).current;
+  useEffect(() => {
+    if (lastKnownLocation && initialPosition) {
+      console.log('Updating marker position');
+      updateMarkerPosition(
+        lastKnownLocation.latitude,
+        lastKnownLocation.longitude,
+      );
+    } else {
+      console.log(
+        'Initial position or last known location not set, cannot update marker',
+      );
+    }
+  }, [lastKnownLocation, initialPosition]);
+
+  const [scanInterval, setScanInterval] = useState(null);
+
+  useEffect(() => {
+    console.log('Initial position updated:', initialPosition);
+  }, [initialPosition]);
 
   const watchId = useRef(null);
-  const isMounted = useRef(true);
+  const lastRecordedPosition = useRef(null);
+
+  useEffect(() => {
+    if (markerPosition && currentLocation && !initialPosition) {
+      setInitialPosition(currentLocation);
+    }
+  }, [markerPosition, currentLocation]);
+
+  useEffect(() => {
+    console.log('Marker position updated:', markerPosition);
+  }, [markerPosition]);
 
   useEffect(() => {
     requestLocationPermission();
     checkWifiConnection();
+    startLocationTracking();
+
     return () => {
-      isMounted.current = false;
       if (watchId.current) Geolocation.clearWatch(watchId.current);
     };
   }, []);
 
-  const renderFloorPlan = () => {
-    if (floorPlans[currentFloor] && floorPlanDimensions[currentFloor]) {
-      return (
-        <ReactNativeZoomableView
-          maxZoom={3}
-          minZoom={0.5}
-          zoomStep={0.5}
-          initialZoom={1}
-          bindToBorders={true}
-          style={styles.zoomableView}>
-          <View {...panResponder.panHandlers}>
-            <Image
-              source={{uri: floorPlans[currentFloor]}}
-              style={[
-                styles.floorPlan,
-                {
-                  width: floorPlanDimensions[currentFloor].width,
-                  height: floorPlanDimensions[currentFloor].height,
-                  transform: [
-                    {translateX: panOffset.x},
-                    {translateY: panOffset.y},
-                  ],
-                },
-              ]}
-            />
-            <Svg
-              style={[
-                StyleSheet.absoluteFill,
-                {
-                  width: floorPlanDimensions[currentFloor].width,
-                  height: floorPlanDimensions[currentFloor].height,
-                  transform: [
-                    {translateX: panOffset.x},
-                    {translateY: panOffset.y},
-                  ],
-                },
-              ]}>
-              {renderHeatmap()}
-              {currentPositionOnFloorPlan && (
-                <Circle
-                  cx={currentPositionOnFloorPlan.x}
-                  cy={currentPositionOnFloorPlan.y}
-                  r={5}
-                  fill="blue"
-                />
-              )}
-            </Svg>
-          </View>
-        </ReactNativeZoomableView>
-      );
-    }
-    return null;
+  const startLocationTracking = () => {
+    watchId.current = Geolocation.watchPosition(
+      position => {
+        const {latitude, longitude} = position.coords;
+        console.log('New location:', {latitude, longitude});
+
+        setLastKnownLocation({latitude, longitude});
+      },
+      error => console.log('Error watching position:', error),
+      {
+        enableHighAccuracy: true,
+        distanceFilter: 0,
+        interval: 1000,
+        fastestInterval: 500,
+      },
+    );
   };
+
+  useEffect(() => {
+    requestLocationPermission();
+    checkWifiConnection();
+    startLocationTracking();
+
+    return () => {
+      if (watchId.current) Geolocation.clearWatch(watchId.current);
+      if (scanInterval) clearInterval(scanInterval);
+    };
+  }, []);
 
   const requestLocationPermission = async () => {
     if (Platform.OS === 'android') {
@@ -181,7 +175,6 @@ const App = () => {
       setConnectedDevice(ssid || 'Not connected');
       setCurrentSSID(ssid || 'N/A');
 
-      // Check if getCurrentWifiBSSID is available
       if (typeof WifiManager.getCurrentWifiBSSID === 'function') {
         const bssid = await WifiManager.getCurrentWifiBSSID();
         setCurrentBSSID(bssid || 'N/A');
@@ -198,60 +191,34 @@ const App = () => {
   };
 
   const startCapturing = () => {
+    if (!isWifiConnected) {
+      setErrorMsg('Please connect to a WiFi network before capturing.');
+      return;
+    }
+    if (!markerPosition) {
+      setErrorMsg('Please place a marker on the floor plan before capturing.');
+      return;
+    }
     setIsCapturing(true);
     setWifiData([]);
 
-    if (Platform.OS === 'android' && !__DEV__) {
-      // Real device logic (unchanged)
-      if (!isWifiConnected) {
-        setErrorMsg('Please connect to a WiFi network before capturing data.');
-        return;
-      }
-      setIsCapturing(true);
-      setWifiData([]);
-      watchId.current = Geolocation.watchPosition(
-        position => {
-          if (isMounted.current) {
-            const {latitude, longitude, altitude} = position.coords;
-            setCurrentLocation({latitude, longitude});
-            scanWifi({latitude, longitude, altitude});
-            updatePositionOnFloorPlan(latitude, longitude);
-          }
-        },
-        error => {
-          if (isMounted.current) {
-            setErrorMsg(error.message);
-          }
-        },
-        {
-          enableHighAccuracy: true,
-          distanceFilter: 2,
-          interval: 5000,
-          fastestInterval: 2000,
-        },
-      );
-    } else {
-      // Emulator or development mode
-      const mockData = generateMockWifiData();
-      setWifiData(mockData);
-      if (!currentLocation) {
-        setCurrentLocation({
-          latitude: mockData[0].latitude,
-          longitude: mockData[0].longitude,
-        });
-      }
-      generateHeatmap();
+    const interval = setInterval(() => {
+      scanWifiAndUpdateHeatmap();
+    }, 2000); // Scan every 2 seconds
+    setScanInterval(interval);
+  };
+
+  const stopCapturing = () => {
+    setIsCapturing(false);
+    if (scanInterval) {
+      clearInterval(scanInterval);
+      setScanInterval(null);
     }
   };
 
-  const stopCapturing = async () => {
-    setIsCapturing(false);
-    if (watchId.current) Geolocation.clearWatch(watchId.current);
-    await saveWifiData();
-    generateHeatmap();
-  };
+  const scanWifiAndUpdateHeatmap = async () => {
+    if (!markerPosition || !initialPosition) return;
 
-  const scanWifi = async location => {
     try {
       setScanStatus('Detecting');
       const wifiList = await WifiManager.loadWifiList();
@@ -259,20 +226,39 @@ const App = () => {
         typeof wifiList === 'string' ? JSON.parse(wifiList) : wifiList;
 
       const newWifiData = parsedWifiList.map(wifi => ({
-        latitude: location.latitude,
-        longitude: location.longitude,
-        altitude: location.altitude,
+        x: markerPosition.x,
+        y: markerPosition.y,
         signalStrength: wifi.level,
         SSID: wifi.SSID,
         BSSID: wifi.BSSID,
       }));
 
       setWifiData(prevData => [...prevData, ...newWifiData]);
+      updateHeatmap(newWifiData);
       setScanStatus('Idle');
     } catch (error) {
       setErrorMsg('Failed to scan WiFi: ' + error.message);
       setScanStatus('Error');
     }
+  };
+
+  const updateHeatmap = newData => {
+    setFloorPlanWifiData(prevData => {
+      const updatedData = {...prevData};
+      if (!updatedData[currentFloor]) {
+        updatedData[currentFloor] = [];
+      }
+
+      newData.forEach(data => {
+        updatedData[currentFloor].push({
+          x: data.x,
+          y: data.y,
+          strength: data.signalStrength,
+        });
+      });
+
+      return updatedData;
+    });
   };
 
   const saveWifiData = async () => {
@@ -283,36 +269,90 @@ const App = () => {
     }
   };
 
-  const updateHeatmap = () => {
-    const newFloorPlanWifiData = {...floorPlanWifiData};
-    if (!newFloorPlanWifiData[currentFloor]) {
-      newFloorPlanWifiData[currentFloor] = Array(GRID_SIZE)
-        .fill()
-        .map(() => Array(GRID_SIZE).fill(0));
+  const updateMarkerPosition = (latitude, longitude) => {
+    if (!initialPosition || !lastUpdatedPosition) {
+      console.log(
+        'Initial position or last updated position not set, cannot update marker',
+      );
+      return;
     }
 
-    wifiData.forEach(data => {
-      const gridX = Math.floor(
-        (data.longitude - currentLocation.longitude) * 1000 + GRID_SIZE / 2,
-      );
-      const gridY = Math.floor(
-        (data.latitude - currentLocation.latitude) * 1000 + GRID_SIZE / 2,
-      );
-      if (gridX >= 0 && gridX < GRID_SIZE && gridY >= 0 && gridY < GRID_SIZE) {
-        newFloorPlanWifiData[currentFloor][gridY][gridX] = Math.max(
-          newFloorPlanWifiData[currentFloor][gridY][gridX],
-          Math.abs(data.signalStrength),
-        );
-      }
-    });
+    const {width, height} = floorPlanDimensions[currentFloor] || {
+      width: 300,
+      height: 200,
+    };
 
-    setFloorPlanWifiData(newFloorPlanWifiData);
+    const latitudeDiff = latitude - lastUpdatedPosition.latitude;
+    const longitudeDiff = longitude - lastUpdatedPosition.longitude;
+
+    console.log(
+      'Latitude diff:',
+      latitudeDiff,
+      'Longitude diff:',
+      longitudeDiff,
+    );
+
+    const pixelsPerDegree = {
+      x: width / 0.001,
+      y: height / 0.001,
+    };
+
+    const newX = markerPosition.x + longitudeDiff * pixelsPerDegree.x;
+    const newY = markerPosition.y - latitudeDiff * pixelsPerDegree.y;
+
+    console.log('Calculated new position:', {x: newX, y: newY});
+
+    setMarkerPosition({x: newX, y: newY});
+    setLastUpdatedPosition({latitude, longitude});
   };
 
-  const updatePositionOnFloorPlan = (latitude, longitude) => {
-    if (!floorPlanDimensions[currentFloor]) return;
-    const {width, height} = floorPlanDimensions[currentFloor];
-    setCurrentPositionOnFloorPlan({x: width / 2, y: height / 2});
+  const handleFloorPlanPress = event => {
+    if (isMarkingMode) {
+      const {locationX, locationY} = event.nativeEvent;
+      setMarkerPosition({x: locationX, y: locationY});
+      setIsMarkingMode(false);
+      if (lastKnownLocation) {
+        console.log('Setting initial position:', lastKnownLocation);
+        setInitialPosition(lastKnownLocation);
+        setLastUpdatedPosition(lastKnownLocation);
+      } else {
+        console.log(
+          'Last known location not available, cannot set initial position',
+        );
+      }
+      console.log('Marker placed at:', {x: locationX, y: locationY});
+    }
+  };
+
+  useEffect(() => {
+    if (lastKnownLocation && initialPosition && lastUpdatedPosition) {
+      console.log('Updating marker position');
+      updateMarkerPosition(
+        lastKnownLocation.latitude,
+        lastKnownLocation.longitude,
+      );
+    } else {
+      console.log(
+        'Initial position, last updated position, or last known location not set, cannot update marker',
+      );
+    }
+  }, [lastKnownLocation]);
+
+  const renderMarker = () => {
+    if (!markerPosition) return null;
+    console.log('Rendering marker at:', markerPosition);
+    return (
+      <Image
+        source={require('./assets/marker.png')}
+        style={{
+          position: 'absolute',
+          left: markerPosition.x - 15,
+          top: markerPosition.y - 30,
+          width: 30,
+          height: 30,
+        }}
+      />
+    );
   };
 
   const uploadFloorPlan = () => {
@@ -344,16 +384,6 @@ const App = () => {
     });
   };
 
-  const markLocation = (x, y) => {
-    if (isMarkingMode) {
-      setMarkedLocations(prevLocations => ({
-        ...prevLocations,
-        [currentFloor]: [...(prevLocations[currentFloor] || []), {x, y}],
-      }));
-      setIsMarkingMode(false);
-    }
-  };
-
   const generateHeatmap = () => {
     const newFloorPlanWifiData = {...floorPlanWifiData};
     if (!newFloorPlanWifiData[currentFloor]) {
@@ -366,7 +396,6 @@ const App = () => {
     };
     const {width, height} = dimensions;
 
-    // Store raw data points
     wifiData.forEach(data => {
       const x =
         ((data.longitude - (currentLocation?.longitude || 0)) / 0.0001) * width;
@@ -383,7 +412,7 @@ const App = () => {
   };
 
   const interpolateSignalStrength = (x, y, dataPoints) => {
-    const MAX_DISTANCE = 100; // Maximum distance to consider for interpolation
+    const MAX_DISTANCE = 100;
     let totalWeight = 0;
     let weightedSum = 0;
 
@@ -392,7 +421,7 @@ const App = () => {
         Math.pow(x - point.x, 2) + Math.pow(y - point.y, 2),
       );
       if (distance <= MAX_DISTANCE) {
-        const weight = 1 / (distance + 1); // Add 1 to avoid division by zero
+        const weight = 1 / (distance + 1);
         totalWeight += weight;
         weightedSum += weight * point.strength;
       }
@@ -409,7 +438,7 @@ const App = () => {
       height: 200,
     };
     const {width, height} = dimensions;
-    const cellSize = 10; // Size of each heatmap cell
+    const cellSize = 10;
     const columns = Math.floor(width / cellSize);
     const rows = Math.floor(height / cellSize);
 
@@ -454,77 +483,9 @@ const App = () => {
   };
 
   const getColorForSignalStrength = strength => {
-    // Assuming strength ranges from -100 dBm (weak) to -30 dBm (strong)
-    const normalizedStrength = (strength + 100) / 70; // Normalize to 0-1 range
-    const hue = (1 - normalizedStrength) * 240; // 240 for blue (weak), 0 for red (strong)
+    const normalizedStrength = (strength + 100) / 70;
+    const hue = (1 - normalizedStrength) * 240;
     return `hsl(${hue}, 100%, 50%)`;
-  };
-
-  const generateMockWifiData = () => {
-    const mockData = [];
-    const defaultWidth = 300;
-    const defaultHeight = 200;
-
-    const dimensions = floorPlanDimensions[currentFloor] || {
-      width: defaultWidth,
-      height: defaultHeight,
-    };
-    const {width, height} = dimensions;
-
-    // Generate a few "WiFi sources"
-    const sources = [
-      {x: width * 0.2, y: height * 0.2, strength: -40},
-      {x: width * 0.8, y: height * 0.8, strength: -45},
-      {x: width * 0.5, y: height * 0.5, strength: -35},
-    ];
-
-    // Generate data points
-    for (let i = 0; i < 100; i++) {
-      const x = Math.random() * width;
-      const y = Math.random() * height;
-
-      // Calculate signal strength based on distance from sources
-      let signalStrength = -100; // Start with a weak signal
-      sources.forEach(source => {
-        const distance = Math.sqrt(
-          Math.pow(x - source.x, 2) + Math.pow(y - source.y, 2),
-        );
-        const strength = source.strength - 20 * Math.log10(distance + 1);
-        signalStrength = Math.max(signalStrength, strength);
-      });
-
-      mockData.push({
-        latitude:
-          (currentLocation?.latitude || 0) +
-          ((y - height / 2) * 0.0001) / height,
-        longitude:
-          (currentLocation?.longitude || 0) +
-          ((x - width / 2) * 0.0001) / width,
-        signalStrength: Math.min(-30, Math.max(-100, signalStrength)),
-      });
-    }
-
-    return mockData;
-  };
-
-  const renderHeatmapLegend = () => {
-    return (
-      <View style={styles.legendContainer}>
-        <Text>Signal Strength</Text>
-        <View style={styles.legendGradient}>
-          <LinearGradient
-            colors={['blue', 'cyan', 'green', 'yellow', 'red']}
-            start={{x: 0, y: 0}}
-            end={{x: 1, y: 0}}
-            style={{flex: 1}}
-          />
-        </View>
-        <View style={styles.legendLabels}>
-          <Text style={styles.legendText}>-100 dBm</Text>
-          <Text style={styles.legendText}>-30 dBm</Text>
-        </View>
-      </View>
-    );
   };
 
   const addNewFloor = () => {
@@ -618,15 +579,12 @@ const App = () => {
             <TouchableOpacity style={styles.button} onPress={uploadFloorPlan}>
               <Text style={styles.buttonText}>Upload Floor Plan</Text>
             </TouchableOpacity>
-            {/* <TouchableOpacity
+            <TouchableOpacity
               style={[styles.button, isMarkingMode && styles.activeButton]}
               onPress={() => setIsMarkingMode(!isMarkingMode)}>
               <Text style={styles.buttonText}>
-                {isMarkingMode ? 'Cancel Marking' : 'Mark Location'}
+                {isMarkingMode ? 'Cancel Marking' : 'Place Marker'}
               </Text>
-            </TouchableOpacity> */}
-            <TouchableOpacity style={styles.button} onPress={generateHeatmap}>
-              <Text style={styles.buttonText}>Generate Heatmap</Text>
             </TouchableOpacity>
             {floorPlans[currentFloor] && floorPlanDimensions[currentFloor] && (
               <ReactNativeZoomableView
@@ -637,32 +595,31 @@ const App = () => {
                 bindToBorders={true}
                 style={styles.zoomableView}>
                 <TouchableOpacity
-                  onPress={event => {
-                    const {locationX, locationY} = event.nativeEvent;
-                    const {width, height} = floorPlanDimensions[currentFloor];
-                    markLocation(locationX / width, locationY / height);
-                  }}
+                  onPress={handleFloorPlanPress}
                   activeOpacity={1}>
-                  <Image
-                    source={{uri: floorPlans[currentFloor]}}
-                    style={[
-                      styles.floorPlan,
-                      {
-                        width: floorPlanDimensions[currentFloor].width,
-                        height: floorPlanDimensions[currentFloor].height,
-                      },
-                    ]}
-                  />
-                  <Svg
-                    style={[
-                      StyleSheet.absoluteFill,
-                      {
-                        width: floorPlanDimensions[currentFloor].width,
-                        height: floorPlanDimensions[currentFloor].height,
-                      },
-                    ]}>
-                    {renderHeatmap()}
-                  </Svg>
+                  <View>
+                    <Image
+                      source={{uri: floorPlans[currentFloor]}}
+                      style={[
+                        styles.floorPlan,
+                        {
+                          width: floorPlanDimensions[currentFloor].width,
+                          height: floorPlanDimensions[currentFloor].height,
+                        },
+                      ]}
+                    />
+                    <Svg
+                      style={[
+                        StyleSheet.absoluteFill,
+                        {
+                          width: floorPlanDimensions[currentFloor].width,
+                          height: floorPlanDimensions[currentFloor].height,
+                        },
+                      ]}>
+                      {renderHeatmap()}
+                    </Svg>
+                    {renderMarker()}
+                  </View>
                 </TouchableOpacity>
               </ReactNativeZoomableView>
             )}
@@ -854,6 +811,9 @@ const styles = StyleSheet.create({
   },
   legendText: {
     fontSize: 12,
+  },
+  activeButton: {
+    backgroundColor: '#33CC33',
   },
 });
 
