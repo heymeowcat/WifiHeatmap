@@ -16,7 +16,6 @@ import Geolocation from '@react-native-community/geolocation';
 import {launchImageLibrary} from 'react-native-image-picker';
 import Svg, {Rect, Circle} from 'react-native-svg';
 import {Picker} from '@react-native-picker/picker';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import ReactNativeZoomableView from '@openspacelabs/react-native-zoomable-view/src/ReactNativeZoomableView';
 
 const App = () => {
@@ -31,98 +30,57 @@ const App = () => {
   const [currentFloor, setCurrentFloor] = useState('1');
   const [isAddingFloor, setIsAddingFloor] = useState(false);
   const [newFloorName, setNewFloorName] = useState('');
-  const [currentPositionOnFloorPlan, setCurrentPositionOnFloorPlan] =
-    useState(null);
   const [isWifiConnected, setIsWifiConnected] = useState(false);
   const [currentSSID, setCurrentSSID] = useState('');
-  const [currentBSSID, setCurrentBSSID] = useState('');
   const [floorPlanDimensions, setFloorPlanDimensions] = useState({});
-
   const [markerPosition, setMarkerPosition] = useState(null);
   const [isMarkingMode, setIsMarkingMode] = useState(false);
   const [initialPosition, setInitialPosition] = useState(null);
   const [lastKnownLocation, setLastKnownLocation] = useState(null);
-
   const [lastUpdatedPosition, setLastUpdatedPosition] = useState(null);
-
-  useEffect(() => {
-    if (lastKnownLocation && initialPosition) {
-      console.log('Updating marker position');
-      updateMarkerPosition(
-        lastKnownLocation.latitude,
-        lastKnownLocation.longitude,
-      );
-    } else {
-      console.log(
-        'Initial position or last known location not set, cannot update marker',
-      );
-    }
-  }, [lastKnownLocation, initialPosition]);
-
   const [scanInterval, setScanInterval] = useState(null);
-
-  useEffect(() => {
-    console.log('Initial position updated:', initialPosition);
-  }, [initialPosition]);
-
-  useEffect(() => {
-    updateHeatmap(wifiData);
-    const interval = setInterval(() => {
-      scanWifiAndUpdateHeatmap();
-    }, 2000);
-    setScanInterval(interval);
-  }, [wifiData]);
 
   const watchId = useRef(null);
 
+  // Consolidated useEffect for initial setup
   useEffect(() => {
-    if (markerPosition && currentLocation && !initialPosition) {
-      setInitialPosition(currentLocation);
-    }
-  }, [markerPosition, currentLocation]);
-
-  useEffect(() => {
-    console.log('Marker position updated:', markerPosition);
-  }, [markerPosition]);
-
-  useEffect(() => {
-    requestLocationPermission();
-    checkWifiConnection();
-    startLocationTracking();
-
-    return () => {
-      if (watchId.current) Geolocation.clearWatch(watchId.current);
+    const setup = async () => {
+      await requestLocationPermission();
+      checkWifiConnection();
+      startLocationTracking();
     };
-  }, []);
 
-  const startLocationTracking = () => {
-    watchId.current = Geolocation.watchPosition(
-      position => {
-        const {latitude, longitude} = position.coords;
-        console.log('New location:', {latitude, longitude});
-
-        setLastKnownLocation({latitude, longitude});
-      },
-      error => console.log('Error watching position:', error),
-      {
-        enableHighAccuracy: true,
-        distanceFilter: 0,
-        interval: 1000,
-        fastestInterval: 500,
-      },
-    );
-  };
-
-  useEffect(() => {
-    requestLocationPermission();
-    checkWifiConnection();
-    startLocationTracking();
+    setup();
 
     return () => {
       if (watchId.current) Geolocation.clearWatch(watchId.current);
       if (scanInterval) clearInterval(scanInterval);
     };
   }, []);
+
+  useEffect(() => {
+    if (isCapturing) {
+      updateHeatmap(wifiData);
+      const interval = setInterval(scanWifiAndUpdateHeatmap, 2000);
+      setScanInterval(interval);
+      return () => clearInterval(interval);
+    }
+  }, [wifiData, isCapturing]);
+
+  useEffect(() => {
+    if (lastKnownLocation && initialPosition) {
+      updateMarkerPosition(
+        lastKnownLocation.latitude,
+        lastKnownLocation.longitude,
+      );
+    }
+  }, [lastKnownLocation, initialPosition]);
+
+  useEffect(() => {
+    if (markerPosition && currentLocation && !initialPosition) {
+      setInitialPosition(currentLocation);
+    }
+  }, [markerPosition, currentLocation]);
 
   const requestLocationPermission = async () => {
     if (Platform.OS === 'android') {
@@ -156,20 +114,28 @@ const App = () => {
       setIsWifiConnected(!!ssid);
       setConnectedDevice(ssid || 'Not connected');
       setCurrentSSID(ssid || 'N/A');
-
-      if (typeof WifiManager.getCurrentWifiBSSID === 'function') {
-        const bssid = await WifiManager.getCurrentWifiBSSID();
-        setCurrentBSSID(bssid || 'N/A');
-      } else {
-        setCurrentBSSID('Not available');
-      }
     } catch (error) {
       console.error('Error checking WiFi connection:', error);
       setIsWifiConnected(false);
       setConnectedDevice('Not connected');
       setCurrentSSID('N/A');
-      setCurrentBSSID('N/A');
     }
+  };
+
+  const startLocationTracking = () => {
+    watchId.current = Geolocation.watchPosition(
+      position => {
+        const {latitude, longitude} = position.coords;
+        setLastKnownLocation({latitude, longitude});
+      },
+      error => console.log('Error watching position:', error),
+      {
+        enableHighAccuracy: true,
+        distanceFilter: 0,
+        interval: 1000,
+        fastestInterval: 500,
+      },
+    );
   };
 
   const startCapturing = () => {
@@ -207,11 +173,9 @@ const App = () => {
         y: markerPosition.y,
         signalStrength: wifi.level,
         SSID: wifi.SSID,
-        BSSID: wifi.BSSID,
       }));
 
       setWifiData(prevData => [...prevData, ...newWifiData]);
-
       setScanStatus('Idle');
     } catch (error) {
       setErrorMsg('Failed to scan WiFi: ' + error.message);
@@ -238,19 +202,8 @@ const App = () => {
     });
   };
 
-  const saveWifiData = async () => {
-    try {
-      await AsyncStorage.setItem('wifiData', JSON.stringify(wifiData));
-    } catch (error) {
-      console.error('Error saving WiFi data:', error);
-    }
-  };
-
   const updateMarkerPosition = (latitude, longitude) => {
     if (!initialPosition || !lastUpdatedPosition) {
-      console.log(
-        'Initial position or last updated position not set, cannot update marker',
-      );
       return;
     }
 
@@ -262,13 +215,6 @@ const App = () => {
     const latitudeDiff = latitude - lastUpdatedPosition.latitude;
     const longitudeDiff = longitude - lastUpdatedPosition.longitude;
 
-    console.log(
-      'Latitude diff:',
-      latitudeDiff,
-      'Longitude diff:',
-      longitudeDiff,
-    );
-
     const pixelsPerDegree = {
       x: width / 0.001,
       y: height / 0.001,
@@ -276,8 +222,6 @@ const App = () => {
 
     const newX = markerPosition.x + longitudeDiff * pixelsPerDegree.x;
     const newY = markerPosition.y - latitudeDiff * pixelsPerDegree.y;
-
-    console.log('Calculated new position:', {x: newX, y: newY});
 
     setMarkerPosition({x: newX, y: newY});
     setLastUpdatedPosition({latitude, longitude});
@@ -289,35 +233,14 @@ const App = () => {
       setMarkerPosition({x: locationX, y: locationY});
       setIsMarkingMode(false);
       if (lastKnownLocation) {
-        console.log('Setting initial position:', lastKnownLocation);
         setInitialPosition(lastKnownLocation);
         setLastUpdatedPosition(lastKnownLocation);
-      } else {
-        console.log(
-          'Last known location not available, cannot set initial position',
-        );
       }
-      console.log('Marker placed at:', {x: locationX, y: locationY});
     }
   };
 
-  useEffect(() => {
-    if (lastKnownLocation && initialPosition && lastUpdatedPosition) {
-      console.log('Updating marker position');
-      updateMarkerPosition(
-        lastKnownLocation.latitude,
-        lastKnownLocation.longitude,
-      );
-    } else {
-      console.log(
-        'Initial position, last updated position, or last known location not set, cannot update marker',
-      );
-    }
-  }, [lastKnownLocation]);
-
   const renderMarker = () => {
     if (!markerPosition) return null;
-    console.log('Rendering marker at:', markerPosition);
     return (
       <Image
         source={require('./assets/marker.png')}
@@ -455,9 +378,9 @@ const App = () => {
         <>
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Connected Device</Text>
+
             <Text>Status: {scanStatus}</Text>
             <Text>SSID: {currentSSID}</Text>
-            <Text>BSSID: {currentBSSID}</Text>
             <TouchableOpacity
               style={[
                 styles.button,
