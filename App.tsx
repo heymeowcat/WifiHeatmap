@@ -212,19 +212,49 @@ const App = () => {
       height: 200,
     };
 
-    const latitudeDiff = latitude - lastUpdatedPosition.latitude;
-    const longitudeDiff = longitude - lastUpdatedPosition.longitude;
+    // Calculate distance moved in meters
+    const latDiff = latitude - lastUpdatedPosition.latitude;
+    const lonDiff = longitude - lastUpdatedPosition.longitude;
+    const distanceMovedLat = latDiff * 111319.9; //  meters per degree of latitude for now
+    const distanceMovedLon =
+      lonDiff * 111319.9 * Math.cos(latitude * (Math.PI / 180));
 
-    const pixelsPerDegree = {
-      x: width / 0.001,
-      y: height / 0.001,
-    };
+    const distanceMoved = Math.sqrt(
+      distanceMovedLat ** 2 + distanceMovedLon ** 2,
+    );
 
-    const newX = markerPosition.x + longitudeDiff * pixelsPerDegree.x;
-    const newY = markerPosition.y - latitudeDiff * pixelsPerDegree.y;
+    const scaleFactor = 20;
 
-    setMarkerPosition({x: newX, y: newY});
+    const pixelMovementX = distanceMovedLon * scaleFactor;
+    const pixelMovementY = distanceMovedLat * scaleFactor;
+
+    const newX = markerPosition.x + pixelMovementX;
+    const newY = markerPosition.y - pixelMovementY;
+
+    const clampedX = Math.max(0, Math.min(width, newX));
+    const clampedY = Math.max(0, Math.min(height, newY));
+
+    const smoothedPosition = smoothPosition(
+      {x: clampedX, y: clampedY},
+      markerPosition,
+    );
+    setMarkerPosition(smoothedPosition);
+
     setLastUpdatedPosition({latitude, longitude});
+
+    console.log(`Distance moved: ${distanceMoved.toFixed(2)} meters`);
+    console.log(
+      `Pixel movement: X: ${pixelMovementX.toFixed(
+        2,
+      )}, Y: ${pixelMovementY.toFixed(2)}`,
+    );
+  };
+
+  const smoothPosition = (newPos, oldPos, factor = 0.2) => {
+    return {
+      x: oldPos.x + (newPos.x - oldPos.x) * factor,
+      y: oldPos.y + (newPos.y - oldPos.y) * factor,
+    };
   };
 
   const handleFloorPlanPress = event => {
