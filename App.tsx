@@ -19,31 +19,6 @@ import {Picker} from '@react-native-picker/picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import ReactNativeZoomableView from '@openspacelabs/react-native-zoomable-view/src/ReactNativeZoomableView';
 
-const GRID_SIZE = 20;
-
-const DataTable = ({data}) => (
-  <View style={styles.tableContainer}>
-    <View style={styles.tableHeader}>
-      <Text style={styles.tableHeaderCell}>Latitude</Text>
-      <Text style={styles.tableHeaderCell}>Longitude</Text>
-      <Text style={styles.tableHeaderCell}>Altitude</Text>
-      <Text style={styles.tableHeaderCell}>Signal Strength</Text>
-    </View>
-    <ScrollView style={styles.tableBody}>
-      {data.map((point, index) => (
-        <View key={index} style={styles.tableRow}>
-          <Text style={styles.tableCell}>{point.x?.toFixed(2) || 'N/A'}</Text>
-          <Text style={styles.tableCell}>{point.y?.toFixed(2) || 'N/A'}</Text>
-          <Text style={styles.tableCell}>
-            {point.altitude?.toFixed(2) || 'N/A'}
-          </Text>
-          <Text style={styles.tableCell}>{point.signalStrength} dBm</Text>
-        </View>
-      ))}
-    </ScrollView>
-  </View>
-);
-
 const App = () => {
   const [wifiData, setWifiData] = useState([]);
   const [errorMsg, setErrorMsg] = useState('');
@@ -90,8 +65,15 @@ const App = () => {
     console.log('Initial position updated:', initialPosition);
   }, [initialPosition]);
 
+  useEffect(() => {
+    updateHeatmap(wifiData);
+    const interval = setInterval(() => {
+      scanWifiAndUpdateHeatmap();
+    }, 2000);
+    setScanInterval(interval);
+  }, [wifiData]);
+
   const watchId = useRef(null);
-  const lastRecordedPosition = useRef(null);
 
   useEffect(() => {
     if (markerPosition && currentLocation && !initialPosition) {
@@ -201,11 +183,6 @@ const App = () => {
     }
     setIsCapturing(true);
     setWifiData([]);
-
-    const interval = setInterval(() => {
-      scanWifiAndUpdateHeatmap();
-    }, 2000); // Scan every 2 seconds
-    setScanInterval(interval);
   };
 
   const stopCapturing = () => {
@@ -234,7 +211,7 @@ const App = () => {
       }));
 
       setWifiData(prevData => [...prevData, ...newWifiData]);
-      updateHeatmap(newWifiData);
+
       setScanStatus('Idle');
     } catch (error) {
       setErrorMsg('Failed to scan WiFi: ' + error.message);
@@ -384,35 +361,8 @@ const App = () => {
     });
   };
 
-  const generateHeatmap = () => {
-    const newFloorPlanWifiData = {...floorPlanWifiData};
-    if (!newFloorPlanWifiData[currentFloor]) {
-      newFloorPlanWifiData[currentFloor] = [];
-    }
-
-    const dimensions = floorPlanDimensions[currentFloor] || {
-      width: 300,
-      height: 200,
-    };
-    const {width, height} = dimensions;
-
-    wifiData.forEach(data => {
-      const x =
-        ((data.longitude - (currentLocation?.longitude || 0)) / 0.0001) * width;
-      const y =
-        ((data.latitude - (currentLocation?.latitude || 0)) / 0.0001) * height;
-      newFloorPlanWifiData[currentFloor].push({
-        x,
-        y,
-        strength: data.signalStrength,
-      });
-    });
-
-    setFloorPlanWifiData(newFloorPlanWifiData);
-  };
-
   const interpolateSignalStrength = (x, y, dataPoints) => {
-    const MAX_DISTANCE = 100;
+    const MAX_DISTANCE = 50;
     let totalWeight = 0;
     let weightedSum = 0;
 
@@ -623,11 +573,6 @@ const App = () => {
                 </TouchableOpacity>
               </ReactNativeZoomableView>
             )}
-          </View>
-
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>WiFi Data Points</Text>
-            <DataTable data={wifiData} />
           </View>
 
           <Modal
