@@ -76,7 +76,7 @@ android {
 
     namespace "com.wifiheatmap"
     defaultConfig {
-        applicationId "com.wifiheatmap"
+        applicationId "com.heymeowcat.wifiheatmap"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
