@@ -1,7 +1,6 @@
 import React, {useState, useEffect, useRef} from 'react';
 import {
   View,
-  Text,
   StyleSheet,
   PermissionsAndroid,
   Platform,
@@ -9,18 +8,63 @@ import {
   TouchableOpacity,
   ScrollView,
   TextInput,
-  Modal,
+  useColorScheme,
 } from 'react-native';
 import WifiManager from 'react-native-wifi-reborn';
 import Geolocation from '@react-native-community/geolocation';
 import {launchImageLibrary} from 'react-native-image-picker';
-import Svg, {Rect, Circle} from 'react-native-svg';
+import Svg, {Rect, Circle, Path} from 'react-native-svg';
 import {Picker} from '@react-native-picker/picker';
 import ReactNativeZoomableView from '@openspacelabs/react-native-zoomable-view/src/ReactNativeZoomableView';
+import {
+  PaperProvider,
+  Appbar,
+  Card,
+  Title,
+  Paragraph,
+  Button,
+  Portal,
+  Dialog,
+  Text,
+  useTheme,
+} from 'react-native-paper';
+import {SafeAreaProvider} from 'react-native-safe-area-context';
+import Slider from '@react-native-community/slider';
+
+const lightTheme = {
+  colors: {
+    primary: '#FFB6C1',
+    secondary: '#FF69B4',
+    background: '#FFFFFF',
+    surface: '#F0F0F0',
+    text: '#000000',
+    disabled: '#CCCCCC',
+    placeholder: '#888888',
+    backdrop: 'rgba(0, 0, 0, 0.5)',
+  },
+};
+
+const darkTheme = {
+  colors: {
+    primary: '#FF69B4',
+    secondary: '#FFB6C1',
+    background: '#121212',
+    surface: '#1E1E1E',
+    text: '#FFFFFF',
+    disabled: '#666666',
+    placeholder: '#AAAAAA',
+    backdrop: 'rgba(0, 0, 0, 0.5)',
+  },
+};
 
 const App = () => {
+  const colorScheme = useColorScheme();
+  const theme = colorScheme === 'dark' ? darkTheme : lightTheme;
+  const paperTheme = useTheme();
+
   const [wifiData, setWifiData] = useState([]);
   const [errorMsg, setErrorMsg] = useState('');
+  const [errorDialogVisible, setErrorDialogVisible] = useState(false);
   const [currentLocation, setCurrentLocation] = useState(null);
   const [floorPlans, setFloorPlans] = useState({});
   const [connectedDevice, setConnectedDevice] = useState(null);
@@ -40,9 +84,57 @@ const App = () => {
   const [lastUpdatedPosition, setLastUpdatedPosition] = useState(null);
   const [scanInterval, setScanInterval] = useState(null);
 
+  const [signalStrength, setSignalStrength] = useState(0);
+  const [sensitivity, setSensitivity] = useState(111319.9);
+
   const watchId = useRef(null);
 
-  // Consolidated useEffect for initial setup
+  const setErrorMsgDialog = message => {
+    setErrorDialogVisible(true);
+    setErrorMsg(message);
+  };
+
+  const renderSignalStrengthMeter = () => {
+    const radius = 50;
+    const strokeWidth = 10;
+    const normalizedStrength =
+      Math.min(Math.max((signalStrength + 90) / 60, 0), 1) * Math.PI;
+
+    const startAngle = -Math.PI;
+    const endAngle = startAngle + normalizedStrength;
+
+    const x1 = radius + (radius - strokeWidth / 2) * Math.cos(startAngle);
+    const y1 = radius + (radius - strokeWidth / 2) * Math.sin(startAngle);
+    const x2 = radius + (radius - strokeWidth / 2) * Math.cos(endAngle);
+    const y2 = radius + (radius - strokeWidth / 2) * Math.sin(endAngle);
+
+    const largeArcFlag = endAngle - startAngle > Math.PI ? 1 : 0;
+
+    return (
+      <View style={styles.signalMeterContainer}>
+        <Svg height={radius * 2} width={radius * 2}>
+          <Circle
+            cx={radius}
+            cy={radius}
+            r={radius - strokeWidth / 2}
+            stroke="#FFB6C1" // Light pink background
+            strokeWidth={strokeWidth}
+            fill="none"
+          />
+          <Path
+            d={`M${x1},${y1} A${radius - strokeWidth / 2},${
+              radius - strokeWidth / 2
+            } 0 ${largeArcFlag} 1 ${x2},${y2}`}
+            stroke="#FF1493" // Dark pink fill color
+            strokeWidth={strokeWidth}
+            fill="none"
+          />
+        </Svg>
+        <Text style={styles.signalStrengthText}>{signalStrength} dBm</Text>
+      </View>
+    );
+  };
+
   useEffect(() => {
     const setup = async () => {
       await requestLocationPermission();
@@ -99,11 +191,11 @@ const App = () => {
         if (granted === PermissionsAndroid.RESULTS.GRANTED) {
           console.log('Location permission granted');
         } else {
-          setErrorMsg('Location permission denied');
+          setErrorMsgDialog('Location permission denied');
         }
       } catch (err) {
         console.warn(err);
-        setErrorMsg('Error requesting location permission');
+        setErrorMsgDialog('Error requesting location permission');
       }
     }
   };
@@ -114,11 +206,14 @@ const App = () => {
       setIsWifiConnected(!!ssid);
       setConnectedDevice(ssid || 'Not connected');
       setCurrentSSID(ssid || 'N/A');
+      const level = await WifiManager.getCurrentSignalStrength();
+      setSignalStrength(level);
     } catch (error) {
       console.error('Error checking WiFi connection:', error);
       setIsWifiConnected(false);
       setConnectedDevice('Not connected');
       setCurrentSSID('N/A');
+      setSignalStrength(0);
     }
   };
 
@@ -140,11 +235,13 @@ const App = () => {
 
   const startCapturing = () => {
     if (!isWifiConnected) {
-      setErrorMsg('Please connect to a WiFi network before capturing.');
+      setErrorMsgDialog('Please connect to a WiFi network before capturing.');
       return;
     }
     if (!markerPosition) {
-      setErrorMsg('Please place a marker on the floor plan before capturing.');
+      setErrorMsgDialog(
+        'Please place a marker on the floor plan before capturing.',
+      );
       return;
     }
     setIsCapturing(true);
@@ -178,7 +275,7 @@ const App = () => {
       setWifiData(prevData => [...prevData, ...newWifiData]);
       setScanStatus('Idle');
     } catch (error) {
-      setErrorMsg('Failed to scan WiFi: ' + error.message);
+      setErrorMsgDialog('Failed to scan WiFi: ' + error.message);
       setScanStatus('Error');
     }
   };
@@ -215,9 +312,9 @@ const App = () => {
     // Calculate distance moved in meters
     const latDiff = latitude - lastUpdatedPosition.latitude;
     const lonDiff = longitude - lastUpdatedPosition.longitude;
-    const distanceMovedLat = latDiff * 111319.9; //  meters per degree of latitude for now
+    const distanceMovedLat = latDiff * sensitivity;
     const distanceMovedLon =
-      lonDiff * 111319.9 * Math.cos(latitude * (Math.PI / 180));
+      lonDiff * sensitivity * Math.cos(latitude * (Math.PI / 180));
 
     const distanceMoved = Math.sqrt(
       distanceMovedLat ** 2 + distanceMovedLon ** 2,
@@ -401,160 +498,146 @@ const App = () => {
   };
 
   return (
-    <ScrollView style={styles.container}>
-      {errorMsg ? (
-        <Text style={styles.error}>{errorMsg}</Text>
-      ) : (
-        <>
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Connected Device</Text>
-
-            <Text>Status: {scanStatus}</Text>
-            <Text>SSID: {currentSSID}</Text>
-            <TouchableOpacity
-              style={[
-                styles.button,
-                isCapturing && styles.stopButton,
-                !isWifiConnected && styles.disabledButton,
-              ]}
-              onPress={isCapturing ? stopCapturing : startCapturing}
-              disabled={!isWifiConnected}>
-              <Text style={styles.buttonText}>
+    <SafeAreaProvider>
+      <PaperProvider theme={paperTheme}>
+        <Appbar.Header>
+          <Appbar.Content title="WiFi Heatmap" />
+        </Appbar.Header>
+        <ScrollView
+          style={[
+            styles.container,
+            {backgroundColor: theme.colors.background},
+          ]}>
+          <Card style={styles.card}>
+            <Card.Content>
+              <Text style={styles.ssidText}>{currentSSID}</Text>
+              <Text style={styles.connectedDeviceText}>Connected Device</Text>
+              {renderSignalStrengthMeter()}
+              <Button
+                mode="contained"
+                onPress={isCapturing ? stopCapturing : startCapturing}
+                disabled={!isWifiConnected}
+                style={[styles.button, isCapturing && styles.stopButton]}>
                 {isCapturing ? 'Stop Capturing' : 'Start Capturing'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+              </Button>
+            </Card.Content>
+          </Card>
 
-          {/* <View style={styles.card}>
-            <Text style={styles.cardTitle}>Google Maps</Text>
-            <MapView
-              style={styles.map}
-              region={{
-                latitude: currentLocation ? currentLocation.latitude : 37.78825,
-                longitude: currentLocation
-                  ? currentLocation.longitude
-                  : -122.4324,
-                latitudeDelta: 0.005,
-                longitudeDelta: 0.005,
-              }}
-              showsUserLocation={true}>
-              {wifiData.length > 0 && (
-                <Heatmap
-                  points={wifiData.map(data => ({
-                    latitude: data.latitude,
-                    longitude: data.longitude,
-                    weight: Math.abs(data.signalStrength),
-                  }))}
-                  radius={20}
-                  opacity={0.8}
-                  maxIntensity={100}
-                  gradientSmoothing={10}
-                  heatmapMode={'POINTS_WEIGHT'}
-                />
-              )}
-              {currentLocation && (
-                <Marker coordinate={currentLocation} title="You are here" />
-              )}
-            </MapView>
-          </View> */}
-
-          <View style={styles.card}>
-            <Text style={styles.cardTitle}>Floor Plan Heatmap</Text>
-            <View style={styles.floorSelection}>
-              <Picker
-                selectedValue={currentFloor}
-                style={styles.picker}
-                onValueChange={itemValue => setCurrentFloor(itemValue)}>
-                {Object.keys(floorPlans).map(floor => (
-                  <Picker.Item
-                    key={floor}
-                    label={`Floor ${floor}`}
-                    value={floor}
-                  />
-                ))}
-              </Picker>
-              <TouchableOpacity
-                style={styles.addFloorButton}
-                onPress={() => setIsAddingFloor(true)}>
-                <Text style={styles.buttonText}>+</Text>
-              </TouchableOpacity>
-            </View>
-            <TouchableOpacity style={styles.button} onPress={uploadFloorPlan}>
-              <Text style={styles.buttonText}>Upload Floor Plan</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, isMarkingMode && styles.activeButton]}
-              onPress={() => setIsMarkingMode(!isMarkingMode)}>
-              <Text style={styles.buttonText}>
-                {isMarkingMode ? 'Cancel Marking' : 'Place Marker'}
-              </Text>
-            </TouchableOpacity>
-            {floorPlans[currentFloor] && floorPlanDimensions[currentFloor] && (
-              <ReactNativeZoomableView
-                maxZoom={3}
-                minZoom={0.5}
-                zoomStep={0.5}
-                initialZoom={1}
-                bindToBorders={true}
-                style={styles.zoomableView}>
-                <TouchableOpacity
-                  onPress={handleFloorPlanPress}
-                  activeOpacity={1}>
-                  <View>
-                    <Image
-                      source={{uri: floorPlans[currentFloor]}}
-                      style={[
-                        styles.floorPlan,
-                        {
-                          width: floorPlanDimensions[currentFloor].width,
-                          height: floorPlanDimensions[currentFloor].height,
-                        },
-                      ]}
+          <Card style={styles.card}>
+            <Card.Content>
+              <Title>Floor Plan Heatmap</Title>
+              <View style={styles.floorSelection}>
+                <Picker
+                  selectedValue={currentFloor}
+                  style={styles.picker}
+                  onValueChange={itemValue => setCurrentFloor(itemValue)}>
+                  {Object.keys(floorPlans).map(floor => (
+                    <Picker.Item
+                      key={floor}
+                      label={`Floor ${floor}`}
+                      value={floor}
                     />
-                    <Svg
-                      style={[
-                        StyleSheet.absoluteFill,
-                        {
-                          width: floorPlanDimensions[currentFloor].width,
-                          height: floorPlanDimensions[currentFloor].height,
-                        },
-                      ]}>
-                      {renderHeatmap()}
-                    </Svg>
-                    {renderMarker()}
-                  </View>
-                </TouchableOpacity>
-              </ReactNativeZoomableView>
-            )}
-          </View>
-
-          <Modal
-            visible={isAddingFloor}
-            transparent={true}
-            animationType="slide">
-            <View style={styles.modalContainer}>
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Add New Floor</Text>
-                <TextInput
-                  style={styles.input}
-                  onChangeText={setNewFloorName}
-                  value={newFloorName}
-                  placeholder="Enter floor name or number"
-                />
-                <TouchableOpacity style={styles.button} onPress={addNewFloor}>
-                  <Text style={styles.buttonText}>Add Floor</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.button, styles.cancelButton]}
-                  onPress={() => setIsAddingFloor(false)}>
-                  <Text style={styles.buttonText}>Cancel</Text>
-                </TouchableOpacity>
+                  ))}
+                </Picker>
+                <Button
+                  mode="contained"
+                  onPress={() => setIsAddingFloor(true)}
+                  style={styles.addFloorButton}>
+                  +
+                </Button>
               </View>
-            </View>
-          </Modal>
-        </>
-      )}
-    </ScrollView>
+              <Button
+                mode="contained"
+                onPress={uploadFloorPlan}
+                style={styles.button}>
+                Upload Floor Plan
+              </Button>
+              <Button
+                mode="contained"
+                onPress={() => setIsMarkingMode(!isMarkingMode)}
+                style={[styles.button, isMarkingMode && styles.activeButton]}>
+                {isMarkingMode ? 'Cancel Marking' : 'Place Marker'}
+              </Button>
+              {floorPlans[currentFloor] && (
+                <ReactNativeZoomableView
+                  maxZoom={3}
+                  minZoom={0.5}
+                  zoomStep={0.5}
+                  initialZoom={1}
+                  bindToBorders={true}
+                  style={styles.zoomableView}>
+                  <TouchableOpacity
+                    onPress={handleFloorPlanPress}
+                    activeOpacity={1}>
+                    <View>
+                      <Image
+                        source={{uri: floorPlans[currentFloor]}}
+                        style={[
+                          styles.floorPlan,
+                          floorPlanDimensions[currentFloor],
+                        ]}
+                        resizeMode="contain"
+                      />
+                      <Svg
+                        style={[
+                          StyleSheet.absoluteFill,
+                          floorPlanDimensions[currentFloor],
+                        ]}>
+                        {renderHeatmap()}
+                      </Svg>
+                      {renderMarker()}
+                    </View>
+                  </TouchableOpacity>
+                </ReactNativeZoomableView>
+              )}
+              <Title style={styles.sensitivityTitle}>Heatmap Sensitivity</Title>
+              <Slider
+                value={sensitivity}
+                onValueChange={value => setSensitivity(value)}
+                minimumValue={50000}
+                maximumValue={200000}
+                step={1000}
+                minimumTrackTintColor={theme.colors.primary}
+                maximumTrackTintColor={theme.colors.disabled}
+                thumbTintColor={theme.colors.secondary}
+              />
+              <Text>Current Sensitivity: {sensitivity.toFixed(2)}</Text>
+            </Card.Content>
+          </Card>
+
+          <Portal>
+            <Dialog
+              visible={isAddingFloor}
+              onDismiss={() => setIsAddingFloor(false)}>
+              <Dialog.Title>Add New Floor</Dialog.Title>
+              <Dialog.Content>
+                <TextInput
+                  label="Floor Name or Number"
+                  value={newFloorName}
+                  onChangeText={setNewFloorName}
+                  style={styles.input}
+                />
+              </Dialog.Content>
+              <Dialog.Actions>
+                <Button onPress={() => setIsAddingFloor(false)}>Cancel</Button>
+                <Button onPress={addNewFloor}>Add Floor</Button>
+              </Dialog.Actions>
+            </Dialog>
+            <Dialog
+              visible={errorDialogVisible}
+              onDismiss={() => setErrorDialogVisible(false)}>
+              <Dialog.Title>Error</Dialog.Title>
+              <Dialog.Content>
+                <Paragraph>{errorMsg}</Paragraph>
+              </Dialog.Content>
+              <Dialog.Actions>
+                <Button onPress={() => setErrorDialogVisible(false)}>OK</Button>
+              </Dialog.Actions>
+            </Dialog>
+          </Portal>
+        </ScrollView>
+      </PaperProvider>
+    </SafeAreaProvider>
   );
 };
 
@@ -564,83 +647,17 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   card: {
-    backgroundColor: 'white',
-    borderRadius: 10,
-    padding: 15,
     marginBottom: 10,
-    shadowColor: '#000',
-    shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.25,
-    shadowRadius: 3.84,
-    elevation: 5,
-  },
-  cardTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 10,
-  },
-  map: {
-    height: 200,
-    marginVertical: 10,
   },
   button: {
-    backgroundColor: '#3399FF',
-    padding: 10,
-    borderRadius: 5,
-    alignItems: 'center',
     marginTop: 10,
   },
   stopButton: {
     backgroundColor: '#FF3333',
   },
-  buttonText: {
-    color: 'white',
-    fontWeight: 'bold',
-  },
-  floorPlanContainer: {
-    marginTop: 10,
-    height: 300,
-    position: 'relative',
-  },
   floorPlan: {
-    flex: 1,
-    resizeMode: 'contain',
-  },
-  error: {
-    color: 'red',
-    fontSize: 18,
-    margin: 10,
-  },
-  tableContainer: {
-    marginTop: 10,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 5,
-  },
-  tableHeader: {
-    flexDirection: 'row',
-    backgroundColor: '#f0f0f0',
-    paddingVertical: 8,
-    paddingHorizontal: 5,
-  },
-  tableHeaderCell: {
-    flex: 1,
-    fontWeight: 'bold',
-    textAlign: 'center',
-  },
-  tableBody: {
-    maxHeight: 200,
-  },
-  tableRow: {
-    flexDirection: 'row',
-    borderTopWidth: 1,
-    borderColor: '#ddd',
-    paddingVertical: 8,
-    paddingHorizontal: 5,
-  },
-  tableCell: {
-    flex: 1,
-    textAlign: 'center',
+    width: '100%',
+    height: '100%',
   },
   floorSelection: {
     flexDirection: 'row',
@@ -652,7 +669,6 @@ const styles = StyleSheet.create({
     height: 50,
   },
   addFloorButton: {
-    backgroundColor: '#3399FF',
     width: 50,
     height: 50,
     borderRadius: 25,
@@ -660,58 +676,45 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginLeft: 10,
   },
-  modalContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-  },
-  modalContent: {
-    backgroundColor: 'white',
-    padding: 20,
-    borderRadius: 10,
-    width: '80%',
-  },
-  modalTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    marginBottom: 15,
-    textAlign: 'center',
-  },
   input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 5,
-    padding: 10,
     marginBottom: 15,
-  },
-  cancelButton: {
-    backgroundColor: '#999',
   },
   zoomableView: {
     width: '100%',
     height: 300,
   },
-  legendContainer: {
-    marginTop: 10,
-    alignItems: 'center',
-    width: '100%',
-  },
-  legendGradient: {
-    width: '100%',
-    height: 20,
-    marginVertical: 5,
-  },
-  legendLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    width: '100%',
-  },
-  legendText: {
-    fontSize: 12,
-  },
   activeButton: {
     backgroundColor: '#33CC33',
+  },
+  sensitivityTitle: {
+    marginTop: 20,
+  },
+  ssidText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    textAlign: 'center',
+  },
+  connectedDeviceText: {
+    fontSize: 14,
+    textAlign: 'center',
+    marginTop: 5,
+  },
+  signalMeterContainer: {
+    alignItems: 'center',
+    marginVertical: 20,
+  },
+  textContainer: {
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+  },
+  signalStrengthText: {
+    fontSize: 16,
+    position: 'absolute',
+    top: '50%',
+    left: '50%',
+    fontWeight: 'bold',
+    transform: [{translateX: -30}, {translateY: -10}],
   },
 });
 
