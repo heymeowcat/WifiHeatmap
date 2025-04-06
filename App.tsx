@@ -12,13 +12,11 @@ import {
 } from 'react-native';
 import WifiManager from 'react-native-wifi-reborn';
 import Geolocation from '@react-native-community/geolocation';
-import {launchImageLibrary} from 'react-native-image-picker';
 import Svg, {Rect, Circle, Path} from 'react-native-svg';
 import {Picker} from '@react-native-picker/picker';
 import ReactNativeZoomableView from '@openspacelabs/react-native-zoomable-view/src/ReactNativeZoomableView';
 import {
   PaperProvider,
-  Appbar,
   Card,
   Title,
   Paragraph,
@@ -27,12 +25,16 @@ import {
   Dialog,
   Text,
   useTheme,
+  MD3LightTheme,
+  MD3DarkTheme,
 } from 'react-native-paper';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 import Slider from '@react-native-community/slider';
 
 const lightTheme = {
+  ...MD3LightTheme,
   colors: {
+    ...MD3LightTheme.colors,
     primary: '#FFB6C1',
     secondary: '#FF69B4',
     background: '#FFFFFF',
@@ -45,9 +47,11 @@ const lightTheme = {
 };
 
 const darkTheme = {
+  ...MD3DarkTheme,
   colors: {
+    ...MD3DarkTheme.colors,
     primary: '#FF69B4',
-    secondary: '#FFB6C1',
+    secondary: '#FF1493',
     background: '#121212',
     surface: '#1E1E1E',
     text: '#FFFFFF',
@@ -85,7 +89,7 @@ const App = () => {
   const [scanInterval, setScanInterval] = useState(null);
 
   const [signalStrength, setSignalStrength] = useState(0);
-  const [sensitivity, setSensitivity] = useState(111319.9);
+  const [sensitivity, setSensitivity] = useState(50); // Changed from 111319.9 to 50 (middle of 0-100 scale)
 
   const watchId = useRef(null);
 
@@ -130,7 +134,9 @@ const App = () => {
             fill="none"
           />
         </Svg>
-        <Text style={styles.signalStrengthText}>{signalStrength} dBm</Text>
+        <Text style={[styles.signalStrengthText, {color: theme.colors.text}]}>
+          {signalStrength} dBm
+        </Text>
       </View>
     );
   };
@@ -312,9 +318,13 @@ const App = () => {
     // Calculate distance moved in meters
     const latDiff = latitude - lastUpdatedPosition.latitude;
     const lonDiff = longitude - lastUpdatedPosition.longitude;
-    const distanceMovedLat = latDiff * sensitivity;
+
+    // Convert user-friendly sensitivity (0-100) to actual calculation value
+    const actualSensitivity = 50000 + sensitivity * 1500;
+
+    const distanceMovedLat = latDiff * actualSensitivity;
     const distanceMovedLon =
-      lonDiff * sensitivity * Math.cos(latitude * (Math.PI / 180));
+      lonDiff * actualSensitivity * Math.cos(latitude * (Math.PI / 180));
 
     const distanceMoved = Math.sqrt(
       distanceMovedLat ** 2 + distanceMovedLon ** 2,
@@ -382,33 +392,47 @@ const App = () => {
     );
   };
 
-  const uploadFloorPlan = () => {
-    launchImageLibrary({mediaType: 'photo'}, response => {
-      if (response.didCancel) {
-        console.log('User cancelled image picker');
-      } else if (response.error) {
-        console.log('ImagePicker Error: ', response.error);
-      } else if (response.assets && response.assets.length > 0) {
-        const uri = response.assets[0].uri;
-        setFloorPlans(prevPlans => ({
-          ...prevPlans,
-          [currentFloor]: uri,
-        }));
+  // Modify the renderFloorPlan function to handle only blank floor plans
+  const renderFloorPlan = () => {
+    if (!floorPlans[currentFloor]) {
+      return (
+        <View style={styles.uploadPromptContainer}>
+          <Text style={styles.uploadPromptText}>
+            Create a blank floor plan to get started
+          </Text>
+          <Button
+            mode="contained"
+            onPress={createBlankFloorPlan}
+            style={[styles.button, {backgroundColor: theme.colors.secondary}]}>
+            Create Blank Floor Plan
+          </Button>
+        </View>
+      );
+    }
 
-        Image.getSize(
-          uri,
-          (width, height) => {
-            setFloorPlanDimensions(prevDimensions => ({
-              ...prevDimensions,
-              [currentFloor]: {width, height},
-            }));
-          },
-          error => {
-            console.error('Error getting image dimensions:', error);
-          },
-        );
-      }
-    });
+    const dimensions = floorPlanDimensions[currentFloor] || {
+      width: 500,
+      height: 500,
+    };
+
+    return (
+      <View style={styles.floorPlanContainer}>
+        <View
+          style={{
+            width: dimensions.width,
+            height: dimensions.height,
+            backgroundColor: '#f0f0f0',
+            borderWidth: 1,
+            borderColor: '#ccc',
+          }}
+        />
+
+        <Svg style={[StyleSheet.absoluteFill, dimensions]}>
+          {renderHeatmap()}
+        </Svg>
+        {renderMarker()}
+      </View>
+    );
   };
 
   const interpolateSignalStrength = (x, y, dataPoints) => {
@@ -431,7 +455,11 @@ const App = () => {
   };
 
   const renderHeatmap = () => {
-    if (!floorPlanWifiData[currentFloor]) return null;
+    if (
+      !floorPlanWifiData[currentFloor] ||
+      floorPlanWifiData[currentFloor].length === 0
+    )
+      return null;
 
     const dimensions = floorPlanDimensions[currentFloor] || {
       width: 300,
@@ -490,42 +518,68 @@ const App = () => {
 
   const addNewFloor = () => {
     if (newFloorName.trim() !== '') {
-      setFloorPlans(prevPlans => ({...prevPlans, [newFloorName]: null}));
+      setFloorPlans(prevPlans => ({...prevPlans, [newFloorName]: 'blank'}));
+      setFloorPlanDimensions(prevDimensions => ({
+        ...prevDimensions,
+        [newFloorName]: {width: 500, height: 500},
+      }));
       setCurrentFloor(newFloorName);
       setNewFloorName('');
       setIsAddingFloor(false);
     }
   };
 
+  // Create a blank floor plan
+  const createBlankFloorPlan = () => {
+    const blankFloorName = `Floor ${Object.keys(floorPlans).length + 1}`;
+    setFloorPlans(prevPlans => ({...prevPlans, [blankFloorName]: 'blank'}));
+    setFloorPlanDimensions(prevDimensions => ({
+      ...prevDimensions,
+      [blankFloorName]: {width: 500, height: 500},
+    }));
+    setCurrentFloor(blankFloorName);
+  };
+
   return (
     <SafeAreaProvider>
       <PaperProvider theme={paperTheme}>
-        <Appbar.Header>
-          <Appbar.Content title="WiFi Heatmap" />
-        </Appbar.Header>
         <ScrollView
           style={[
             styles.container,
             {backgroundColor: theme.colors.background},
           ]}>
-          <Card style={styles.card}>
+          <Card style={(styles.card, {backgroundColor: theme.colors.surface})}>
             <Card.Content>
-              <Text style={styles.ssidText}>{currentSSID}</Text>
-              <Text style={styles.connectedDeviceText}>Connected Device</Text>
+              <Text style={[styles.ssidText, {color: theme.colors.text}]}>
+                {currentSSID}
+              </Text>
+              <Text
+                style={[
+                  styles.connectedDeviceText,
+                  {color: theme.colors.text},
+                ]}>
+                Connected Device
+              </Text>
               {renderSignalStrengthMeter()}
               <Button
                 mode="contained"
                 onPress={isCapturing ? stopCapturing : startCapturing}
                 disabled={!isWifiConnected}
-                style={[styles.button, isCapturing && styles.stopButton]}>
+                style={[
+                  styles.button,
+                  {backgroundColor: theme.colors.secondary},
+                  isCapturing && styles.stopButton,
+                ]}>
                 {isCapturing ? 'Stop Capturing' : 'Start Capturing'}
               </Button>
             </Card.Content>
           </Card>
 
-          <Card style={styles.card}>
+          <Card style={(styles.card, {backgroundColor: theme.colors.surface})}>
             <Card.Content>
-              <Title>Floor Plan Heatmap</Title>
+              <Title style={{color: theme.colors.text}}>
+                Floor Plan Heatmap
+              </Title>
               <View style={styles.floorSelection}>
                 <Picker
                   selectedValue={currentFloor}
@@ -542,22 +596,34 @@ const App = () => {
                 <Button
                   mode="contained"
                   onPress={() => setIsAddingFloor(true)}
-                  style={styles.addFloorButton}>
+                  style={[
+                    styles.addFloorButton,
+                    {backgroundColor: theme.colors.secondary},
+                  ]}>
                   +
                 </Button>
               </View>
               <Button
                 mode="contained"
-                onPress={uploadFloorPlan}
-                style={styles.button}>
-                Upload Floor Plan
+                onPress={createBlankFloorPlan}
+                style={[
+                  styles.button,
+                  {backgroundColor: theme.colors.secondary},
+                ]}>
+                Create Blank Floor Plan
               </Button>
               <Button
                 mode="contained"
                 onPress={() => setIsMarkingMode(!isMarkingMode)}
-                style={[styles.button, isMarkingMode && styles.activeButton]}>
+                style={[
+                  styles.button,
+                  {backgroundColor: theme.colors.secondary},
+                  ,
+                  isMarkingMode && styles.activeButton,
+                ]}>
                 {isMarkingMode ? 'Cancel Marking' : 'Place Marker'}
               </Button>
+              <View style={{marginTop: 30}}></View>
               {floorPlans[currentFloor] && (
                 <ReactNativeZoomableView
                   maxZoom={3}
@@ -565,18 +631,21 @@ const App = () => {
                   zoomStep={0.5}
                   initialZoom={1}
                   bindToBorders={true}
-                  style={styles.zoomableView}>
+                  style={[styles.zoomableView, styles.mapContainer]}>
                   <TouchableOpacity
                     onPress={handleFloorPlanPress}
                     activeOpacity={1}>
                     <View>
-                      <Image
-                        source={{uri: floorPlans[currentFloor]}}
+                      <View
                         style={[
                           styles.floorPlan,
                           floorPlanDimensions[currentFloor],
+                          {
+                            backgroundColor: '#f0f0f0',
+                            borderWidth: 1,
+                            borderColor: '#ccc',
+                          },
                         ]}
-                        resizeMode="contain"
                       />
                       <Svg
                         style={[
@@ -590,18 +659,35 @@ const App = () => {
                   </TouchableOpacity>
                 </ReactNativeZoomableView>
               )}
-              <Title style={styles.sensitivityTitle}>Heatmap Sensitivity</Title>
-              <Slider
-                value={sensitivity}
-                onValueChange={value => setSensitivity(value)}
-                minimumValue={50000}
-                maximumValue={200000}
-                step={1000}
-                minimumTrackTintColor={theme.colors.primary}
-                maximumTrackTintColor={theme.colors.disabled}
-                thumbTintColor={theme.colors.secondary}
-              />
-              <Text>Current Sensitivity: {sensitivity.toFixed(2)}</Text>
+              <View style={styles.sensitivityContainer}>
+                <Title
+                  style={{
+                    color: theme.colors.text,
+                    marginTop: 30,
+                    marginBottom: 10,
+                  }}>
+                  Heatmap Sensitivity
+                </Title>
+                <Slider
+                  value={sensitivity}
+                  onValueChange={value => setSensitivity(value)}
+                  minimumValue={0}
+                  maximumValue={100}
+                  step={1}
+                  minimumTrackTintColor={theme.colors.primary}
+                  maximumTrackTintColor={theme.colors.disabled}
+                  thumbTintColor={theme.colors.secondary}
+                  style={styles.slider}
+                />
+                <Text
+                  style={{
+                    color: theme.colors.text,
+                    textAlign: 'center',
+                    marginTop: 5,
+                  }}>
+                  Sensitivity: {sensitivity.toFixed(0)}
+                </Text>
+              </View>
             </Card.Content>
           </Card>
 
@@ -647,7 +733,7 @@ const styles = StyleSheet.create({
     padding: 10,
   },
   card: {
-    marginBottom: 10,
+    marginBottom: 20,
   },
   button: {
     marginTop: 10,
@@ -686,8 +772,18 @@ const styles = StyleSheet.create({
   activeButton: {
     backgroundColor: '#33CC33',
   },
+  sensitivityContainer: {
+    marginTop: 10,
+    marginBottom: 20,
+    paddingHorizontal: 10,
+  },
+  slider: {
+    height: 40,
+    marginHorizontal: 5,
+  },
   sensitivityTitle: {
     marginTop: 20,
+    marginBottom: 10,
   },
   ssidText: {
     fontSize: 24,
@@ -715,6 +811,26 @@ const styles = StyleSheet.create({
     left: '50%',
     fontWeight: 'bold',
     transform: [{translateX: -30}, {translateY: -10}],
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    width: '100%',
+    marginTop: 10,
+  },
+  uploadPromptContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  uploadPromptText: {
+    marginBottom: 15,
+    textAlign: 'center',
+    fontSize: 16,
+  },
+  floorPlanContainer: {
+    position: 'relative',
+    width: '100%',
   },
 });
 
