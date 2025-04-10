@@ -1,4 +1,4 @@
-import React, {useState, useEffect, useRef} from 'react';
+import React, {useState, useEffect, useRef, useCallback, useMemo} from 'react';
 import {View, StyleSheet, ScrollView, Text} from 'react-native';
 import {
   Card,
@@ -17,9 +17,17 @@ import LocationService, {LocationData} from '../services/LocationService';
 import {HeatmapDataPoint, smoothPosition} from '../utils/HeatmapUtils';
 import {useTheme} from '../theme/ThemeProvider';
 import {globalStyles} from '../theme/styles';
+import {useSettings} from '../context/SettingsContext';
 
 const HeatmapScreen = () => {
   const theme = useTheme();
+  const {
+    sensitivity,
+    autoScan,
+    highAccuracy,
+    scanInterval: settingsScanInterval,
+  } = useSettings();
+
   const [wifiData, setWifiData] = useState<WifiDataPoint[]>([]);
   const [errorMsg, setErrorMsg] = useState('');
   const [errorDialogVisible, setErrorDialogVisible] = useState(false);
@@ -47,8 +55,23 @@ const HeatmapScreen = () => {
   const [lastUpdatedPosition, setLastUpdatedPosition] =
     useState<LocationData | null>(null);
   const [scanInterval, setScanInterval] = useState<NodeJS.Timeout | null>(null);
-  const [sensitivity, setSensitivity] = useState(50);
   const [scanStatus, setScanStatus] = useState('Idle');
+
+  // Add a ref to track if the component is mounted
+  const isMounted = useRef(true);
+
+  // Optimize the scan interval timing based on performance
+  const [scanIntervalTime, setScanIntervalTime] = useState(3000);
+
+  // Update scan interval when settings change
+  useEffect(() => {
+    setScanIntervalTime(settingsScanInterval);
+  }, [settingsScanInterval]);
+
+  // Update location accuracy when settings change
+  useEffect(() => {
+    LocationService.setHighAccuracy(highAccuracy);
+  }, [highAccuracy]);
 
   useEffect(() => {
     const setup = async () => {
@@ -59,19 +82,49 @@ const HeatmapScreen = () => {
     setup();
 
     return () => {
+      isMounted.current = false;
       LocationService.stopLocationTracking();
       if (scanInterval) clearInterval(scanInterval);
     };
   }, []);
 
+  // Use useCallback to prevent recreation of this function on each render
+  const scanWifiAndUpdateHeatmap = useCallback(async () => {
+    if (!markerPosition || !initialPosition || !isMounted.current) return;
+    if (!autoScan) return; // Skip scanning if autoScan is disabled
+
+    try {
+      setScanStatus('Detecting');
+      const wifiList = await WifiService.scanWifiNetworks();
+
+      if (!isMounted.current) return;
+
+      const newWifiData = wifiList.map(wifi => ({
+        x: markerPosition.x,
+        y: markerPosition.y,
+        signalStrength: wifi.level,
+        SSID: wifi.SSID,
+      }));
+
+      setWifiData(prevData => [...prevData, ...newWifiData]);
+      setScanStatus('Idle');
+    } catch (error) {
+      if (isMounted.current) {
+        setErrorMsgDialog('Failed to scan WiFi: ' + error.message);
+        setScanStatus('Error');
+      }
+    }
+  }, [markerPosition, initialPosition, autoScan]);
+
+  // Use useEffect with proper dependencies
   useEffect(() => {
     if (isCapturing) {
       updateHeatmap(wifiData);
-      const interval = setInterval(scanWifiAndUpdateHeatmap, 2000);
+      const interval = setInterval(scanWifiAndUpdateHeatmap, scanIntervalTime);
       setScanInterval(interval);
       return () => clearInterval(interval);
     }
-  }, [wifiData, isCapturing]);
+  }, [wifiData, isCapturing, scanWifiAndUpdateHeatmap, scanIntervalTime]);
 
   useEffect(() => {
     if (lastKnownLocation && initialPosition) {
@@ -85,6 +138,7 @@ const HeatmapScreen = () => {
   useEffect(() => {
     if (markerPosition && lastKnownLocation && !initialPosition) {
       setInitialPosition(lastKnownLocation);
+      setLastUpdatedPosition(lastKnownLocation);
     }
   }, [markerPosition, lastKnownLocation]);
 
@@ -118,28 +172,6 @@ const HeatmapScreen = () => {
     }
   };
 
-  const scanWifiAndUpdateHeatmap = async () => {
-    if (!markerPosition || !initialPosition) return;
-
-    try {
-      setScanStatus('Detecting');
-      const wifiList = await WifiService.scanWifiNetworks();
-
-      const newWifiData = wifiList.map(wifi => ({
-        x: markerPosition.x,
-        y: markerPosition.y,
-        signalStrength: wifi.level,
-        SSID: wifi.SSID,
-      }));
-
-      setWifiData(prevData => [...prevData, ...newWifiData]);
-      setScanStatus('Idle');
-    } catch (error) {
-      setErrorMsgDialog('Failed to scan WiFi: ' + error.message);
-      setScanStatus('Error');
-    }
-  };
-
   const updateHeatmap = (newData: WifiDataPoint[]) => {
     setFloorPlanWifiData(prevData => {
       const updatedData = {...prevData};
@@ -160,7 +192,7 @@ const HeatmapScreen = () => {
   };
 
   const updateMarkerPosition = (latitude: number, longitude: number) => {
-    if (!initialPosition || !lastUpdatedPosition) {
+    if (!initialPosition || !lastUpdatedPosition || !markerPosition) {
       return;
     }
 
@@ -290,6 +322,19 @@ const HeatmapScreen = () => {
     );
   };
 
+  // Memoize the floor plan content to prevent unnecessary re-renders
+  const floorPlanContent = useMemo(
+    () => renderFloorPlanContent(),
+    [
+      floorPlans,
+      currentFloor,
+      floorPlanWifiData,
+      markerPosition,
+      isMarkingMode,
+      floorPlanDimensions,
+    ],
+  );
+
   return (
     <ScrollView
       style={[
@@ -313,12 +358,12 @@ const HeatmapScreen = () => {
             {isCapturing ? 'Stop Capturing' : 'Start Capturing'}
           </Button>
 
-          {/* {scanStatus !== 'Idle' && (
+          {scanStatus !== 'Idle' && (
             <Paragraph
               style={{color: theme.colors.textSecondary, marginTop: 8}}>
               Status: {scanStatus}
             </Paragraph>
-          )} */}
+          )}
         </Card.Content>
       </Card>
 
@@ -364,9 +409,7 @@ const HeatmapScreen = () => {
             {isMarkingMode ? 'Cancel Marking' : 'Place Marker'}
           </Button>
 
-          <View style={styles.floorPlanWrapper}>
-            {renderFloorPlanContent()}
-          </View>
+          <View style={styles.floorPlanWrapper}>{floorPlanContent}</View>
 
           <View style={styles.sensitivityContainer}>
             <Title
@@ -379,7 +422,10 @@ const HeatmapScreen = () => {
             </Title>
             <Slider
               value={sensitivity}
-              onValueChange={value => setSensitivity(value)}
+              onValueChange={() => {
+                // This is now handled by the settings context
+                // setSensitivity(value);
+              }}
               minimumValue={0}
               maximumValue={100}
               step={1}

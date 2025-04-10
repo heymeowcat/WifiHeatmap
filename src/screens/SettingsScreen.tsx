@@ -1,16 +1,23 @@
-import React, {useState} from 'react';
-import {View, StyleSheet, ScrollView} from 'react-native';
-import {Card, Title, Text, Button, Switch, Divider} from 'react-native-paper';
-import {useTheme} from '../theme/ThemeProvider';
-import {globalStyles} from '../theme/styles';
+import React from 'react';
+import { View, StyleSheet, ScrollView, Text } from 'react-native';
+import { Card, Title, Button, Divider, Switch } from 'react-native-paper';
 import Slider from '@react-native-community/slider';
+import { useTheme } from '../theme/ThemeProvider';
+import { useSettings } from '../context/SettingsContext';
+import { globalStyles } from '../theme/styles';
 
 const SettingsScreen = () => {
   const theme = useTheme();
-  const [sensitivity, setSensitivity] = useState(50);
-  const [autoScan, setAutoScan] = useState(true);
-  const [highAccuracy, setHighAccuracy] = useState(true);
-  const [darkMode, setDarkMode] = useState(theme.dark);
+  const {
+    sensitivity,
+    setSensitivity,
+    autoScan,
+    setAutoScan,
+    highAccuracy,
+    setHighAccuracy,
+    darkMode,
+    setDarkMode,
+  } = useSettings();
 
   return (
     <ScrollView
@@ -73,9 +80,7 @@ const SettingsScreen = () => {
           <Title style={{color: theme.colors.text}}>WiFi Scanning</Title>
 
           <View style={styles.settingRow}>
-            <Text style={{color: theme.colors.text}}>
-              Auto-scan WiFi Networks
-            </Text>
+            <Text style={{color: theme.colors.text}}>Auto-scan WiFi Networks</Text>
             <Switch
               value={autoScan}
               onValueChange={setAutoScan}
@@ -114,7 +119,7 @@ const SettingsScreen = () => {
               marginTop: 4,
               fontSize: 12,
             }}>
-            Note: This will follow system settings by default
+            Toggle between light and dark theme
           </Text>
         </Card.Content>
       </Card>
