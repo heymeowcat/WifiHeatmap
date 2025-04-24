@@ -1,29 +1,79 @@
 import React, {useState, useEffect, useRef, useCallback, useMemo} from 'react';
-import {View, StyleSheet, ScrollView, Text} from 'react-native';
 import {
+  View,
+  Text,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Dimensions,
+} from 'react-native';
+import {
+  Button,
   Card,
   Title,
-  Button,
+  Paragraph,
   Dialog,
   Portal,
-  Paragraph,
   TextInput,
+  useTheme,
 } from 'react-native-paper';
 import {Picker} from '@react-native-picker/picker';
 import Slider from '@react-native-community/slider';
-import FloorPlanHeatmap from '../components/FloorPlanHeatmap';
-import WifiService, {WifiDataPoint} from '../services/WifiService';
-import LocationService, {LocationData} from '../services/LocationService';
-import {HeatmapDataPoint, smoothPosition} from '../utils/HeatmapUtils';
-import {useTheme} from '../theme/ThemeProvider';
-import {globalStyles} from '../theme/styles';
+import SkiaHeatmap from '../components/SkiaHeatmap';
+import Heatmap3D from '../components/Heatmap3D';
+import {WifiDataPoint, HeatmapDataPoint, LocationData} from '../types/heatmap';
 import {useSettings} from '../context/SettingsContext';
+import {WifiService, LocationService} from '../services';
+import {NativeModules} from 'react-native';
+import {globalStyles} from '../theme/styles';
+
+// Check if WifiRtt is available and provide a fallback
+const {WifiRtt} = NativeModules;
+
+const CANVAS_WIDTH = 800;
+const CANVAS_HEIGHT = 600;
+const AUTO_UPDATE_INTERVAL = 5000;
+
+const scanWifiNetworks = async () => {
+  try {
+    return await WifiService.scanWifiNetworks();
+  } catch (error) {
+    console.error('Error scanning WiFi networks:', error);
+    // Return empty array instead of throwing
+    return [];
+  }
+};
+
+const startRanging = async (bssid: string) => {
+  try {
+    if (!WifiRtt) {
+      console.warn('WifiRtt module not available, skipping ranging');
+      return null;
+    }
+    return await WifiRtt.startRanging(bssid);
+  } catch (error) {
+    console.error('Error starting ranging:', error);
+    return null;
+  }
+};
+
+const startMultipleRanging = async () => {
+  try {
+    if (!WifiRtt) {
+      console.warn('WifiRtt module not available, skipping multiple ranging');
+      return [];
+    }
+    return await WifiRtt.startMultipleRanging();
+  } catch (error) {
+    console.error('Error starting multiple ranging:', error);
+    return [];
+  }
+};
 
 const HeatmapScreen = () => {
   const theme = useTheme();
   const {
     sensitivity,
-    autoScan,
     highAccuracy,
     scanInterval: settingsScanInterval,
   } = useSettings();
@@ -54,93 +104,54 @@ const HeatmapScreen = () => {
     useState<LocationData | null>(null);
   const [lastUpdatedPosition, setLastUpdatedPosition] =
     useState<LocationData | null>(null);
-  const [scanInterval, setScanInterval] = useState<NodeJS.Timeout | null>(null);
   const [scanStatus, setScanStatus] = useState('Idle');
+  const [isAutoUpdate, setIsAutoUpdate] = useState(false);
+  const [viewMode, setViewMode] = useState<'2D' | '3D'>('2D');
+  const autoUpdateTimer = useRef<NodeJS.Timeout | null>(null);
 
-  // Add a ref to track if the component is mounted
   const isMounted = useRef(true);
-
-  // Optimize the scan interval timing based on performance
-  const [scanIntervalTime, setScanIntervalTime] = useState(3000);
-
-  // Update scan interval when settings change
-  useEffect(() => {
-    setScanIntervalTime(settingsScanInterval);
-  }, [settingsScanInterval]);
-
-  // Update location accuracy when settings change
-  useEffect(() => {
-    LocationService.setHighAccuracy(highAccuracy);
-  }, [highAccuracy]);
 
   useEffect(() => {
     const setup = async () => {
       await WifiService.requestLocationPermission();
       startLocationTracking();
+
+      try {
+        // Check if RTT is available using the service instead
+        const isRttAvailable = await WifiService.isRttAvailable();
+        console.log('RTT available:', isRttAvailable);
+      } catch (error) {
+        console.error('Error checking RTT availability:', error);
+      }
     };
-
     setup();
-
     return () => {
       isMounted.current = false;
       LocationService.stopLocationTracking();
-      if (scanInterval) clearInterval(scanInterval);
+      if (autoUpdateTimer.current) clearInterval(autoUpdateTimer.current);
     };
   }, []);
 
-  // Use useCallback to prevent recreation of this function on each render
-  const scanWifiAndUpdateHeatmap = useCallback(async () => {
-    if (!markerPosition || !initialPosition || !isMounted.current) return;
-    if (!autoScan) return; // Skip scanning if autoScan is disabled
+  useEffect(() => {
+    LocationService.setHighAccuracy(highAccuracy);
+  }, [highAccuracy]);
 
-    try {
-      setScanStatus('Detecting');
-      const wifiList = await WifiService.scanWifiNetworks();
-
-      if (!isMounted.current) return;
-
-      const newWifiData = wifiList.map(wifi => ({
-        x: markerPosition.x,
-        y: markerPosition.y,
-        signalStrength: wifi.level,
-        SSID: wifi.SSID,
-      }));
-
-      setWifiData(prevData => [...prevData, ...newWifiData]);
-      setScanStatus('Idle');
-    } catch (error) {
-      if (isMounted.current) {
-        setErrorMsgDialog('Failed to scan WiFi: ' + error.message);
-        setScanStatus('Error');
+  useEffect(() => {
+    if (isAutoUpdate && isCapturing) {
+      autoUpdateTimer.current = setInterval(() => {
+        handleAddDataPoint();
+      }, AUTO_UPDATE_INTERVAL);
+    } else if (autoUpdateTimer.current) {
+      clearInterval(autoUpdateTimer.current);
+      autoUpdateTimer.current = null;
+    }
+    return () => {
+      if (autoUpdateTimer.current) {
+        clearInterval(autoUpdateTimer.current);
+        autoUpdateTimer.current = null;
       }
-    }
-  }, [markerPosition, initialPosition, autoScan]);
-
-  // Use useEffect with proper dependencies
-  useEffect(() => {
-    if (isCapturing) {
-      updateHeatmap(wifiData);
-      const interval = setInterval(scanWifiAndUpdateHeatmap, scanIntervalTime);
-      setScanInterval(interval);
-      return () => clearInterval(interval);
-    }
-  }, [wifiData, isCapturing, scanWifiAndUpdateHeatmap, scanIntervalTime]);
-
-  useEffect(() => {
-    if (lastKnownLocation && initialPosition) {
-      updateMarkerPosition(
-        lastKnownLocation.latitude,
-        lastKnownLocation.longitude,
-      );
-    }
-  }, [lastKnownLocation, initialPosition]);
-
-  useEffect(() => {
-    if (markerPosition && lastKnownLocation && !initialPosition) {
-      setInitialPosition(lastKnownLocation);
-      setLastUpdatedPosition(lastKnownLocation);
-    }
-  }, [markerPosition, lastKnownLocation]);
+    };
+  }, [isAutoUpdate, isCapturing, markerPosition, initialPosition]);
 
   const startLocationTracking = () => {
     LocationService.startLocationTracking(
@@ -166,9 +177,9 @@ const HeatmapScreen = () => {
 
   const stopCapturing = () => {
     setIsCapturing(false);
-    if (scanInterval) {
-      clearInterval(scanInterval);
-      setScanInterval(null);
+    if (autoUpdateTimer.current) {
+      clearInterval(autoUpdateTimer.current);
+      autoUpdateTimer.current = null;
     }
   };
 
@@ -178,69 +189,17 @@ const HeatmapScreen = () => {
       if (!updatedData[currentFloor]) {
         updatedData[currentFloor] = [];
       }
-
       newData.forEach(data => {
         updatedData[currentFloor].push({
           x: data.x,
           y: data.y,
           strength: data.signalStrength,
+          distance: data.distance,
+          quality: data.quality,
         });
       });
-
       return updatedData;
     });
-  };
-
-  const updateMarkerPosition = (latitude: number, longitude: number) => {
-    if (!initialPosition || !lastUpdatedPosition || !markerPosition) {
-      return;
-    }
-
-    const {width, height} = floorPlanDimensions[currentFloor] || {
-      width: 300,
-      height: 200,
-    };
-
-    // Calculate distance moved in meters
-    const latDiff = latitude - lastUpdatedPosition.latitude;
-    const lonDiff = longitude - lastUpdatedPosition.longitude;
-
-    // Convert user-friendly sensitivity (0-100) to actual calculation value
-    const actualSensitivity = 50000 + sensitivity * 1500;
-
-    const distanceMovedLat = latDiff * actualSensitivity;
-    const distanceMovedLon =
-      lonDiff * actualSensitivity * Math.cos(latitude * (Math.PI / 180));
-
-    const distanceMoved = Math.sqrt(
-      distanceMovedLat ** 2 + distanceMovedLon ** 2,
-    );
-
-    const scaleFactor = 20;
-
-    const pixelMovementX = distanceMovedLon * scaleFactor;
-    const pixelMovementY = distanceMovedLat * scaleFactor;
-
-    const newX = markerPosition.x + pixelMovementX;
-    const newY = markerPosition.y - pixelMovementY;
-
-    const clampedX = Math.max(0, Math.min(width, newX));
-    const clampedY = Math.max(0, Math.min(height, newY));
-
-    const smoothedPosition = smoothPosition(
-      {x: clampedX, y: clampedY},
-      markerPosition,
-    );
-    setMarkerPosition(smoothedPosition);
-
-    setLastUpdatedPosition({latitude, longitude});
-
-    console.log(`Distance moved: ${distanceMoved.toFixed(2)} meters`);
-    console.log(
-      `Pixel movement: X: ${pixelMovementX.toFixed(
-        2,
-      )}, Y: ${pixelMovementY.toFixed(2)}`,
-    );
   };
 
   const setErrorMsgDialog = (message: string) => {
@@ -259,12 +218,84 @@ const HeatmapScreen = () => {
     }
   };
 
+  const handleAddDataPoint = async () => {
+    if (!isCapturing || !markerPosition) {
+      return;
+    }
+
+    setScanStatus('Scanning...');
+    try {
+      const networks = await scanWifiNetworks();
+      
+      // Handle case when networks is empty
+      if (!networks || networks.length === 0) {
+        setScanStatus('No networks found');
+        return;
+      }
+
+      const rttCapableAPs = networks.filter(ap => ap.is80211mcResponder);
+
+      let bestSignalStrength = -100;
+      let bestDistance = null;
+      let signalQuality = 0;
+
+      if (rttCapableAPs.length > 0) {
+        try {
+          const rangingResults = await startMultipleRanging();
+
+          if (rangingResults && rangingResults.length > 0) {
+            const bestResult = rangingResults.reduce((best, current) => {
+              return current.signalQuality > best.signalQuality
+                ? current
+                : best;
+            }, rangingResults[0]);
+
+            bestSignalStrength = bestResult.rssi;
+            bestDistance = bestResult.distanceMm / 1000;
+            signalQuality = bestResult.signalQuality;
+          }
+        } catch (error) {
+          console.log('RTT ranging failed, falling back to RSSI:', error);
+        }
+      }
+
+      if (bestSignalStrength === -100 && networks.length > 0) {
+        const strongestAP = networks.reduce((strongest, current) => {
+          return current.level > strongest.level ? current : strongest;
+        }, networks[0]);
+
+        bestSignalStrength = strongestAP.level;
+      }
+
+      const newDataPoint: WifiDataPoint = {
+        x: markerPosition.x,
+        y: markerPosition.y,
+        signalStrength: bestSignalStrength,
+        distance: bestDistance,
+        quality: signalQuality,
+        timestamp: new Date().toISOString(),
+      };
+
+      setWifiData(prevData => [...prevData, newDataPoint]);
+      updateHeatmap([newDataPoint]);
+      setScanStatus(
+        `Signal: ${bestSignalStrength} dBm${
+          bestDistance ? `, Distance: ${bestDistance.toFixed(2)}m` : ''
+        }`,
+      );
+    } catch (error) {
+      console.error('Error adding data point:', error);
+      setScanStatus('Scan failed');
+      setErrorMsgDialog(`Failed to scan WiFi: ${error.message}`);
+    }
+  };
+
   const addNewFloor = () => {
     if (newFloorName.trim() !== '') {
       setFloorPlans(prevPlans => ({...prevPlans, [newFloorName]: 'blank'}));
       setFloorPlanDimensions(prevDimensions => ({
         ...prevDimensions,
-        [newFloorName]: {width: 500, height: 500},
+        [newFloorName]: {width: CANVAS_WIDTH, height: CANVAS_HEIGHT},
       }));
       setCurrentFloor(newFloorName);
       setNewFloorName('');
@@ -277,171 +308,153 @@ const HeatmapScreen = () => {
     setFloorPlans(prevPlans => ({...prevPlans, [blankFloorName]: 'blank'}));
     setFloorPlanDimensions(prevDimensions => ({
       ...prevDimensions,
-      [blankFloorName]: {width: 500, height: 500},
+      [blankFloorName]: {width: CANVAS_WIDTH, height: CANVAS_HEIGHT},
     }));
     setCurrentFloor(blankFloorName);
   };
 
-  const renderFloorPlanContent = () => {
-    if (!floorPlans[currentFloor]) {
-      return (
-        <View style={styles.uploadPromptContainer}>
-          <Paragraph
-            style={{
-              color: theme.colors.text,
-              textAlign: 'center',
-              marginBottom: 16,
-            }}>
-            Create a blank floor plan to get started
-          </Paragraph>
-          <Button
-            mode="contained"
-            onPress={createBlankFloorPlan}
-            style={[
-              globalStyles.button,
-              {backgroundColor: theme.colors.accent},
-            ]}>
-            Create Blank Floor Plan
-          </Button>
-        </View>
-      );
-    }
-
-    return (
-      <View style={styles.floorPlanContainer}>
-        <FloorPlanHeatmap
-          floorPlanDimensions={
-            floorPlanDimensions[currentFloor] || {width: 500, height: 500}
-          }
-          heatmapData={floorPlanWifiData[currentFloor] || []}
-          markerPosition={markerPosition}
-          isMarkingMode={isMarkingMode}
-          onFloorPlanPress={handleFloorPlanPress}
-        />
-      </View>
-    );
+  const toggleViewMode = () => {
+    setViewMode(prevMode => (prevMode === '2D' ? '3D' : '2D'));
   };
 
-  // Memoize the floor plan content to prevent unnecessary re-renders
-  const floorPlanContent = useMemo(
-    () => renderFloorPlanContent(),
-    [
-      floorPlans,
-      currentFloor,
-      floorPlanWifiData,
-      markerPosition,
-      isMarkingMode,
-      floorPlanDimensions,
-    ],
-  );
+  const currentDimensions = floorPlanDimensions[currentFloor] || {
+    width: CANVAS_WIDTH,
+    height: CANVAS_HEIGHT,
+  };
+
+  const currentFloorData = floorPlanWifiData[currentFloor] || [];
+
+  const renderHeatmap = () => {
+    if (viewMode === '3D') {
+      return (
+        <Heatmap3D
+          width={currentDimensions.width}
+          height={currentDimensions.height}
+          data={currentFloorData}
+          floorPlanDimensions={currentDimensions}
+        />
+      );
+    } else {
+      return (
+        <SkiaHeatmap
+          width={currentDimensions.width}
+          height={currentDimensions.height}
+          data={currentFloorData}
+          floorPlanImage={
+            floorPlans[currentFloor] !== 'blank'
+              ? floorPlans[currentFloor]
+              : null
+          }
+          markerPosition={markerPosition}
+          onPress={handleFloorPlanPress}
+        />
+      );
+    }
+  };
 
   return (
-    <ScrollView
-      style={[
-        globalStyles.container,
-        {backgroundColor: theme.colors.background},
-      ]}>
-      <Card
-        style={[globalStyles.card, {backgroundColor: theme.colors.surface}]}>
+    <ScrollView style={styles.container}>
+      <Card style={styles.card}>
         <Card.Content>
-          <Title style={{color: theme.colors.text}}>WiFi Heatmap Capture</Title>
-
-          <Button
-            mode="contained"
-            onPress={isCapturing ? stopCapturing : startCapturing}
-            style={[
-              globalStyles.button,
-              isCapturing
-                ? {backgroundColor: theme.colors.error}
-                : {backgroundColor: theme.colors.primary},
-            ]}>
-            {isCapturing ? 'Stop Capturing' : 'Start Capturing'}
-          </Button>
-
-          {scanStatus !== 'Idle' && (
-            <Paragraph
-              style={{color: theme.colors.textSecondary, marginTop: 8}}>
-              Status: {scanStatus}
-            </Paragraph>
-          )}
-        </Card.Content>
-      </Card>
-
-      <Card
-        style={[globalStyles.card, {backgroundColor: theme.colors.surface}]}>
-        <Card.Content>
-          <Title style={{color: theme.colors.text}}>Floor Plan</Title>
-
-          <View style={styles.floorSelection}>
-            <Picker
-              selectedValue={currentFloor}
-              style={[styles.picker, {color: theme.colors.text}]}
-              onValueChange={itemValue => setCurrentFloor(itemValue)}>
-              {Object.keys(floorPlans).map(floor => (
-                <Picker.Item
-                  key={floor}
-                  label={`Floor ${floor}`}
-                  value={floor}
-                  color={theme.colors.text}
-                />
-              ))}
-            </Picker>
+          <Title>WiFi Heatmap</Title>
+          <View style={styles.controlsContainer}>
+            <View style={styles.pickerContainer}>
+              <Text>Floor:</Text>
+              <Picker
+                selectedValue={currentFloor}
+                style={styles.picker}
+                onValueChange={itemValue =>
+                  setCurrentFloor(itemValue.toString())
+                }>
+                {Object.keys(floorPlans).map(floor => (
+                  <Picker.Item key={floor} label={floor} value={floor} />
+                ))}
+              </Picker>
+            </View>
             <Button
-              mode="contained"
+              mode="outlined"
               onPress={() => setIsAddingFloor(true)}
-              style={[
-                styles.addFloorButton,
-                {backgroundColor: theme.colors.primary},
-              ]}>
-              +
+              style={styles.button}>
+              Add Floor
+            </Button>
+            <Button
+              mode="outlined"
+              onPress={createBlankFloorPlan}
+              style={styles.button}>
+              Create Blank
             </Button>
           </View>
 
-          <Button
-            mode="contained"
-            onPress={() => setIsMarkingMode(!isMarkingMode)}
-            style={[
-              globalStyles.button,
-              isMarkingMode
-                ? {backgroundColor: theme.colors.accent}
-                : {backgroundColor: theme.colors.primary},
-            ]}>
-            {isMarkingMode ? 'Cancel Marking' : 'Place Marker'}
-          </Button>
+          <View style={styles.viewModeContainer}>
+            <Text>View Mode: {viewMode}</Text>
+            <Button
+              mode="contained"
+              onPress={toggleViewMode}
+              style={styles.button}>
+              Toggle {viewMode === '2D' ? '3D' : '2D'} View
+            </Button>
+          </View>
 
-          <View style={styles.floorPlanWrapper}>{floorPlanContent}</View>
+          <View style={styles.heatmapContainer}>{renderHeatmap()}</View>
 
-          <View style={styles.sensitivityContainer}>
-            <Title
-              style={{
-                color: theme.colors.text,
-                marginTop: 16,
-                marginBottom: 8,
-              }}>
-              Movement Sensitivity
-            </Title>
-            <Slider
-              value={sensitivity}
-              onValueChange={() => {
-                // This is now handled by the settings context
-                // setSensitivity(value);
-              }}
-              minimumValue={0}
-              maximumValue={100}
-              step={1}
-              minimumTrackTintColor={theme.colors.primary}
-              maximumTrackTintColor={theme.colors.disabled}
-              thumbTintColor={theme.colors.accent}
-              style={styles.slider}
-            />
-            <Text
-              style={{
-                color: theme.colors.text,
-                textAlign: 'center',
-                marginTop: 4,
-              }}>
-              Sensitivity: {sensitivity.toFixed(0)}
-            </Text>
+          <View style={styles.controlsContainer}>
+            <Button
+              mode="contained"
+              onPress={() => setIsMarkingMode(true)}
+              style={styles.button}
+              disabled={isCapturing}>
+              Place Marker
+            </Button>
+            <Button
+              mode="contained"
+              onPress={isCapturing ? stopCapturing : startCapturing}
+              style={[
+                styles.button,
+                {
+                  backgroundColor: isCapturing
+                    ? theme.colors.error
+                    : theme.colors.primary,
+                },
+              ]}>
+              {isCapturing ? 'Stop Capturing' : 'Start Capturing'}
+            </Button>
+            <Button
+              mode="contained"
+              onPress={handleAddDataPoint}
+              style={styles.button}
+              disabled={!isCapturing || !markerPosition}>
+              Add Data Point
+            </Button>
+          </View>
+
+          <View style={styles.statusContainer}>
+            <Text>Status: {scanStatus}</Text>
+            <View style={styles.switchContainer}>
+              <Text>Auto Update:</Text>
+              <Switch
+                value={isAutoUpdate}
+                onValueChange={setIsAutoUpdate}
+                disabled={!isCapturing}
+              />
+            </View>
+          </View>
+
+          <View style={styles.dataPointsContainer}>
+            <Title>Data Points</Title>
+            {wifiData.map((data, index) => (
+              <View key={index} style={styles.dataPoint}>
+                <Text>
+                  Position: ({data.x.toFixed(0)}, {data.y.toFixed(0)})
+                </Text>
+                <Text>Signal Strength: {data.signalStrength} dBm</Text>
+                {data.distance && (
+                  <Text>Distance: {data.distance.toFixed(2)} m</Text>
+                )}
+                {data.quality && (
+                  <Text>Quality: {(data.quality * 100).toFixed(0)}%</Text>
+                )}
+              </View>
+            ))}
           </View>
         </Card.Content>
       </Card>
@@ -453,15 +466,14 @@ const HeatmapScreen = () => {
           <Dialog.Title>Add New Floor</Dialog.Title>
           <Dialog.Content>
             <TextInput
-              label="Floor Name or Number"
+              label="Floor Name"
               value={newFloorName}
               onChangeText={setNewFloorName}
-              style={styles.input}
             />
           </Dialog.Content>
           <Dialog.Actions>
             <Button onPress={() => setIsAddingFloor(false)}>Cancel</Button>
-            <Button onPress={addNewFloor}>Add Floor</Button>
+            <Button onPress={addNewFloor}>Add</Button>
           </Dialog.Actions>
         </Dialog>
 
@@ -482,51 +494,64 @@ const HeatmapScreen = () => {
 };
 
 const styles = StyleSheet.create({
-  floorSelection: {
+  container: {
+    flex: 1,
+    padding: 16,
+  },
+  card: {
+    marginBottom: 16,
+  },
+  controlsContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginVertical: 8,
+    flexWrap: 'wrap',
+  },
+  pickerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 16,
   },
   picker: {
-    flex: 1,
+    width: 150,
     height: 50,
   },
-  addFloorButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+  button: {
+    marginHorizontal: 4,
+  },
+  heatmapContainer: {
+    marginVertical: 16,
+    alignItems: 'center',
     justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  floorPlanWrapper: {
-    marginTop: 16,
-    marginBottom: 16,
-    alignItems: 'center',
-  },
-  floorPlanContainer: {
-    width: '100%',
-    height: 400,
     borderWidth: 1,
     borderColor: '#ccc',
+    borderRadius: 8,
     overflow: 'hidden',
   },
-  uploadPromptContainer: {
-    width: '100%',
-    height: 200,
-    justifyContent: 'center',
+  statusContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
+    marginVertical: 8,
   },
-  sensitivityContainer: {
+  switchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  dataPointsContainer: {
     marginTop: 16,
   },
-  slider: {
-    width: '100%',
-    height: 40,
+  dataPoint: {
+    padding: 8,
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 4,
+    marginVertical: 4,
   },
-  input: {
+  viewModeContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginVertical: 8,
   },
 });

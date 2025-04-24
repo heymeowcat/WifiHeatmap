@@ -1,74 +1,121 @@
-import Geolocation from 'react-native-geolocation-service';
-import { PermissionsAndroid, Platform } from 'react-native';
+import Geolocation, { 
+  GeoPosition, 
+  GeoError,
+  GeoOptions 
+} from 'react-native-geolocation-service';
+import { Platform, PermissionsAndroid } from 'react-native';
+import { LocationData } from '../types/heatmap';
 
-export interface LocationData {
-  latitude: number;
-  longitude: number;
-  accuracy?: number;
-  timestamp?: number;
+class LocationService {
+  private watchId: number | null = null;
+  private highAccuracy: boolean = true;
+
+  async requestLocationPermission(): Promise<boolean> {
+    if (Platform.OS === 'ios') {
+      try {
+        const auth = await Geolocation.requestAuthorization('whenInUse');
+        return auth === 'granted';
+      } catch (error) {
+        console.error('Error requesting iOS location permission:', error);
+        return false;
+      }
+    }
+
+    if (Platform.OS === 'android') {
+      try {
+        const granted = await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+          {
+            title: 'Location Permission',
+            message: 'WiFi Heatmap needs access to your location',
+            buttonNeutral: 'Ask Me Later',
+            buttonNegative: 'Cancel',
+            buttonPositive: 'OK',
+          },
+        );
+        return granted === PermissionsAndroid.RESULTS.GRANTED;
+      } catch (error) {
+        console.error('Error requesting Android location permission:', error);
+        return false;
+      }
+    }
+
+    return false;
+  }
+
+  setHighAccuracy(highAccuracy: boolean): void {
+    this.highAccuracy = highAccuracy;
+  }
+
+  startLocationTracking(
+    onSuccess: (location: LocationData) => void,
+    onError: (error: GeoError) => void,
+  ): void {
+    if (this.watchId !== null) {
+      this.stopLocationTracking();
+    }
+
+    const options: GeoOptions = {
+      enableHighAccuracy: this.highAccuracy,
+      distanceFilter: 0,
+      interval: 1000,
+      fastestInterval: 500,
+    };
+
+    this.watchId = Geolocation.watchPosition(
+      (position: GeoPosition) => {
+        const locationData: LocationData = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          altitude: position.coords.altitude,
+          altitudeAccuracy: position.coords.altitudeAccuracy,
+          heading: position.coords.heading,
+          speed: position.coords.speed,
+          timestamp: position.timestamp,
+        };
+        onSuccess(locationData);
+      },
+      onError,
+      options,
+    );
+  }
+
+  stopLocationTracking(): void {
+    if (this.watchId !== null) {
+      Geolocation.clearWatch(this.watchId);
+      this.watchId = null;
+    }
+  }
+
+  getCurrentPosition(
+    onSuccess: (location: LocationData) => void,
+    onError: (error: GeoError) => void,
+  ): void {
+    const options: GeoOptions = {
+      enableHighAccuracy: this.highAccuracy,
+      timeout: 15000,
+      maximumAge: 10000,
+    };
+
+    Geolocation.getCurrentPosition(
+      (position: GeoPosition) => {
+        const locationData: LocationData = {
+          latitude: position.coords.latitude,
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy,
+          altitude: position.coords.altitude,
+          altitudeAccuracy: position.coords.altitudeAccuracy,
+          heading: position.coords.heading,
+          speed: position.coords.speed,
+          timestamp: position.timestamp,
+        };
+        onSuccess(locationData);
+      },
+      onError,
+      options,
+    );
+  }
 }
 
-let highAccuracyEnabled = true;
-
-const requestLocationPermission = async (): Promise<boolean> => {
-  if (Platform.OS === 'ios') {
-    const auth = await Geolocation.requestAuthorization('whenInUse');
-    return auth === 'granted';
-  }
-
-  if (Platform.OS === 'android') {
-    const granted = await PermissionsAndroid.request(
-      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
-      {
-        title: 'Location Permission',
-        message: 'WiFi Heatmap needs access to your location',
-        buttonNeutral: 'Ask Me Later',
-        buttonNegative: 'Cancel',
-        buttonPositive: 'OK',
-      },
-    );
-    return granted === PermissionsAndroid.RESULTS.GRANTED;
-  }
-
-  return false;
-};
-
-const startLocationTracking = (
-  onLocationUpdate: (location: LocationData) => void,
-  onError: (error: any) => void,
-) => {
-  const watchId = Geolocation.watchPosition(
-    position => {
-      const { latitude, longitude, accuracy, timestamp } = position.coords;
-      onLocationUpdate({ latitude, longitude, accuracy, timestamp });
-    },
-    error => {
-      onError(error);
-    },
-    {
-      enableHighAccuracy: highAccuracyEnabled,
-      distanceFilter: 0.1, // minimum distance in meters
-      interval: 1000, // minimum time interval in ms
-      fastestInterval: 500, // fastest interval in ms
-    },
-  );
-
-  return watchId;
-};
-
-const stopLocationTracking = (watchId?: number) => {
-  if (watchId) {
-    Geolocation.clearWatch(watchId);
-  }
-};
-
-const setHighAccuracy = (enabled: boolean) => {
-  highAccuracyEnabled = enabled;
-};
-
-export default {
-  requestLocationPermission,
-  startLocationTracking,
-  stopLocationTracking,
-  setHighAccuracy,
-};
+export default new LocationService();

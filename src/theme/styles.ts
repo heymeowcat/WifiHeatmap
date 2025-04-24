@@ -1,37 +1,31 @@
 import { StyleSheet } from 'react-native';
-import { colors } from './colors';
 
 export const globalStyles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    padding: 16,
   },
   card: {
-    marginHorizontal: 16,
+    marginBottom: 16,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    marginBottom: 16,
+  },
+  subtitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
     marginVertical: 8,
-    borderRadius: 8,
-    backgroundColor: colors.surface,
   },
   button: {
     marginVertical: 8,
-    borderRadius: 8,
   },
-  activeButton: {
-    backgroundColor: colors.accent,
-  },
-  stopButton: {
-    backgroundColor: colors.error,
-  },
-  title: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: colors.text,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 16,
-    color: colors.textSecondary,
-    marginBottom: 16,
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginVertical: 8,
   },
   input: {
     marginVertical: 8,

@@ -1,48 +1,51 @@
-import React, { createContext, useState, useContext, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface SettingsContextType {
   sensitivity: number;
   setSensitivity: (value: number) => void;
-  autoScan: boolean;
-  setAutoScan: (value: boolean) => void;
   highAccuracy: boolean;
   setHighAccuracy: (value: boolean) => void;
-  darkMode: boolean;
-  setDarkMode: (value: boolean) => void;
   scanInterval: number;
   setScanInterval: (value: number) => void;
+  darkMode: boolean;
+  setDarkMode: (value: boolean) => void;
 }
 
-const defaultSettings = {
+const defaultSettings: Omit<SettingsContextType, 'setSensitivity' | 'setHighAccuracy' | 'setScanInterval' | 'setDarkMode'> = {
   sensitivity: 50,
-  autoScan: true,
   highAccuracy: true,
+  scanInterval: 5000,
   darkMode: false,
-  scanInterval: 3000,
 };
 
-const SettingsContext = createContext<SettingsContextType | undefined>(undefined);
+const SettingsContext = createContext<SettingsContextType>({
+  ...defaultSettings,
+  setSensitivity: () => {},
+  setHighAccuracy: () => {},
+  setScanInterval: () => {},
+  setDarkMode: () => {},
+});
+
+export const useSettings = () => useContext(SettingsContext);
 
 export const SettingsProvider: React.FC<{children: React.ReactNode}> = ({ children }) => {
-  const [sensitivity, setSensitivityState] = useState(defaultSettings.sensitivity);
-  const [autoScan, setAutoScanState] = useState(defaultSettings.autoScan);
-  const [highAccuracy, setHighAccuracyState] = useState(defaultSettings.highAccuracy);
-  const [darkMode, setDarkModeState] = useState(defaultSettings.darkMode);
-  const [scanInterval, setScanIntervalState] = useState(defaultSettings.scanInterval);
+  const [sensitivity, setSensitivity] = useState(defaultSettings.sensitivity);
+  const [highAccuracy, setHighAccuracy] = useState(defaultSettings.highAccuracy);
+  const [scanInterval, setScanInterval] = useState(defaultSettings.scanInterval);
+  const [darkMode, setDarkMode] = useState(defaultSettings.darkMode);
 
-  // Load settings from storage on mount
+  // Load settings from AsyncStorage on mount
   useEffect(() => {
     const loadSettings = async () => {
       try {
-        const storedSettings = await AsyncStorage.getItem('appSettings');
+        const storedSettings = await AsyncStorage.getItem('settings');
         if (storedSettings) {
-          const settings = JSON.parse(storedSettings);
-          setSensitivityState(settings.sensitivity ?? defaultSettings.sensitivity);
-          setAutoScanState(settings.autoScan ?? defaultSettings.autoScan);
-          setHighAccuracyState(settings.highAccuracy ?? defaultSettings.highAccuracy);
-          setDarkModeState(settings.darkMode ?? defaultSettings.darkMode);
-          setScanIntervalState(settings.scanInterval ?? defaultSettings.scanInterval);
+          const parsedSettings = JSON.parse(storedSettings);
+          setSensitivity(parsedSettings.sensitivity ?? defaultSettings.sensitivity);
+          setHighAccuracy(parsedSettings.highAccuracy ?? defaultSettings.highAccuracy);
+          setScanInterval(parsedSettings.scanInterval ?? defaultSettings.scanInterval);
+          setDarkMode(parsedSettings.darkMode ?? defaultSettings.darkMode);
         }
       } catch (error) {
         console.error('Failed to load settings:', error);
@@ -52,66 +55,38 @@ export const SettingsProvider: React.FC<{children: React.ReactNode}> = ({ childr
     loadSettings();
   }, []);
 
-  // Save settings to storage when they change
-  const saveSettings = async (settings: Partial<typeof defaultSettings>) => {
-    try {
-      const currentSettings = await AsyncStorage.getItem('appSettings');
-      const parsedSettings = currentSettings ? JSON.parse(currentSettings) : {};
-      const newSettings = { ...parsedSettings, ...settings };
-      await AsyncStorage.setItem('appSettings', JSON.stringify(newSettings));
-    } catch (error) {
-      console.error('Failed to save settings:', error);
-    }
-  };
+  // Save settings to AsyncStorage when they change
+  useEffect(() => {
+    const saveSettings = async () => {
+      try {
+        const settings = {
+          sensitivity,
+          highAccuracy,
+          scanInterval,
+          darkMode,
+        };
+        await AsyncStorage.setItem('settings', JSON.stringify(settings));
+      } catch (error) {
+        console.error('Failed to save settings:', error);
+      }
+    };
 
-  const setSensitivity = (value: number) => {
-    setSensitivityState(value);
-    saveSettings({ sensitivity: value });
-  };
-
-  const setAutoScan = (value: boolean) => {
-    setAutoScanState(value);
-    saveSettings({ autoScan: value });
-  };
-
-  const setHighAccuracy = (value: boolean) => {
-    setHighAccuracyState(value);
-    saveSettings({ highAccuracy: value });
-  };
-
-  const setDarkMode = (value: boolean) => {
-    setDarkModeState(value);
-    saveSettings({ darkMode: value });
-  };
-
-  const setScanInterval = (value: number) => {
-    setScanIntervalState(value);
-    saveSettings({ scanInterval: value });
-  };
+    saveSettings();
+  }, [sensitivity, highAccuracy, scanInterval, darkMode]);
 
   return (
     <SettingsContext.Provider
       value={{
         sensitivity,
         setSensitivity,
-        autoScan,
-        setAutoScan,
         highAccuracy,
         setHighAccuracy,
-        darkMode,
-        setDarkMode,
         scanInterval,
         setScanInterval,
+        darkMode,
+        setDarkMode,
       }}>
       {children}
     </SettingsContext.Provider>
   );
-};
-
-export const useSettings = () => {
-  const context = useContext(SettingsContext);
-  if (context === undefined) {
-    throw new Error('useSettings must be used within a SettingsProvider');
-  }
-  return context;
 };

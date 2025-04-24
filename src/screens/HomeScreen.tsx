@@ -33,10 +33,10 @@ const HomeScreen = ({navigation}) => {
 
   const updateWifiInfo = async () => {
     try {
-      const {ssid, strength} = await WifiService.getCurrentWifiInfo();
-      setIsWifiConnected(ssid !== 'Not connected');
-      setCurrentSSID(ssid);
-      setSignalStrength(strength);
+      const wifiInfo = await WifiService.getCurrentWifiInfo();
+      setIsWifiConnected(wifiInfo.ssid !== 'Not connected');
+      setCurrentSSID(wifiInfo.ssid);
+      setSignalStrength(wifiInfo.strength);
     } catch (error) {
       console.error('Error updating WiFi info:', error);
     }
